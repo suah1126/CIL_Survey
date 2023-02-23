@@ -741,8 +741,7 @@ class KNNNet(BaseNet):
         self.args = args
         self.convnet.fc = nn.Identity()
         self.convnet.requires_grad_(requires_grad=False)
-        self.dim = 512  
-
+        self.dim = 512
         _dtype = torch.float32
         self.qinformer = TransformerEncoderLayer(d_model=self.dim,
                                                  nhead=8,
@@ -766,12 +765,11 @@ class KNNNet(BaseNet):
                                                  device=device,
                                                  dtype=_dtype,
                                                  )
-        print(self.qinformer.device)
-        if args.backbone == 'resnet50':
-            self.knnformer = nn.Sequential(
-                nn.Linear(2048, self.dim),
-                self.knnformer,
-            )
+        # if args.backbone == 'resnet50':
+        #     self.knnformer = nn.Sequential(
+        #         nn.Linear(2048, self.dim),
+        #         self.knnformer,
+        #     )
 
     def forward(self, x, tr_q, tr_knn_cat, global_proto):
         qout = self.qinformer(tr_q, tr_q, tr_q)

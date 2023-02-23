@@ -27,7 +27,7 @@ class memknn(BaseLearner):
         # memknn require pretrained backbone
         self._network = KNNNet(args["convnet_type"], True, args, self._device)
         self.mode = 'embedding'
-        self.k = args.k
+        self.k = args['k']
 
     def after_task(self):
         self._known_classes = self._total_classes
@@ -82,7 +82,8 @@ class memknn(BaseLearner):
 
     def _train(self, train_loader, test_loader):
         self._network.to(self._device)
-        for k, v in self._network.parameters():
+        param_list = []
+        for k, v in self._network.named_parameters():
             if not 'backbone' in k:
                 param_list.append(v)
             else:
@@ -99,15 +100,16 @@ class memknn(BaseLearner):
     def _training_step(self, train_loader, test_loader, optimizer):
         prog_bar = tqdm(range(epochs))
         for _, epoch in enumerate(prog_bar):
-            self.qinformer.train()
-            self.knnformer.train()
-            self._network.convnet.eval()
+            self._network.module.qinformer.train()
+            self._network.module.knnformer.train()
+            self._network.module.convnet.eval()
             losses = 0.0
             correct, total = 0, 0
             for i, (_, inputs, targets) in enumerate(train_loader):
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
                 
-                out = self._network.convnet(x)
+                out = self._network.module.convnet(inputs)
+                print(out)
                 with torch.no_grad():
                     classwise_sim = torch.einsum('b d, n d -> b n', out, self._data_memory)
                     # B, N -> B, K
@@ -158,13 +160,13 @@ class memknn(BaseLearner):
         logging.info(info)
 
     def _extract_vectors(self, loader):
-        self._network.convnet.eval()
+        self._network.module.convnet.eval()
         vectors, targets = [], []
         for _, _inputs, _targets in loader:
             _targets = _targets.numpy()
             if isinstance(self._network, nn.DataParallel):
                 _vectors = tensor2numpy(
-                    self._network.convnet(_inputs.to(self._device))
+                    self._network.module.convnet(_inputs.to(self._device))
                 )
             else:
                 _vectors = tensor2numpy(
