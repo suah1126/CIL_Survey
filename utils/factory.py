@@ -12,6 +12,7 @@ from models.podnet import PODNet
 from models.rmm import RMM_FOSTER, RMM_iCaRL
 from models.wa import WA
 from models.memo import MEMO
+from models.memknn import memknn
 
 def get_model(model_name, args):
     name = model_name.lower()
@@ -45,5 +46,7 @@ def get_model(model_name, args):
         return RMM_FOSTER(args)
     elif name == 'memo':
         return MEMO(args)
+    elif name == 'memknn':
+        return memknn(args)
     else:
         assert 0

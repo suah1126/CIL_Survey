@@ -38,6 +38,8 @@ from convs.memo_resnet import get_resnet26_imagenet as memo_resnet26_imagenet
 from convs.memo_resnet import get_resnet34_imagenet as memo_resnet34_imagenet
 from convs.memo_resnet import get_resnet50_imagenet as memo_resnet50_imagenet
 
+from utils.transformer import TransformerEncoderLayer
+
 def get_convnet(convnet_type, pretrained=False):
     name = convnet_type.lower()
     if name == "resnet32":
@@ -727,3 +729,83 @@ class AdaptiveNet(nn.Module):
         self.fc.load_state_dict(model_infos['fc'])
         test_acc = model_infos['test_acc']
         return test_acc
+
+class KNNNet(BaseNet):
+    def __init__(self, convnet_type, pretrained, args, device, gradcam=False):
+        super().__init__(convnet_type, pretrained)
+        self.gradcam = gradcam
+        if hasattr(self, "gradcam") and self.gradcam:
+            self._gradcam_hooks = [None, None]
+            self.set_gradcam_hook()
+
+        self.args = args
+        self.convnet.fc = nn.Identity()
+        self.convnet.requires_grad_(requires_grad=False)
+        self.dim = 512  
+
+        _dtype = torch.float32
+        self.qinformer = TransformerEncoderLayer(d_model=self.dim,
+                                                 nhead=8,
+                                                 dim_feedforward=self.dim,
+                                                 dropout=0.0,
+                                                 # activation=F.relu,
+                                                 layer_norm_eps=1e-05,
+                                                 batch_first=True,
+                                                 norm_first=True,
+                                                 device=device,
+                                                 dtype=_dtype,
+                                                 )
+        self.knnformer = TransformerEncoderLayer(d_model=self.dim,
+                                                 nhead=8,
+                                                 dim_feedforward=self.dim,
+                                                 dropout=0.0,
+                                                 # activation=F.relu,
+                                                 layer_norm_eps=1e-05,
+                                                 batch_first=True,
+                                                 norm_first=True,
+                                                 device=device,
+                                                 dtype=_dtype,
+                                                 )
+        print(self.qinformer.device)
+        if args.backbone == 'resnet50':
+            self.knnformer = nn.Sequential(
+                nn.Linear(2048, self.dim),
+                self.knnformer,
+            )
+
+    def forward(self, x, tr_q, tr_knn_cat, global_proto):
+        qout = self.qinformer(tr_q, tr_q, tr_q)
+        nout = self.knnformer(tr_q, tr_knn_cat, tr_knn_cat)
+
+        qout = torch.einsum('b d, c d -> b c', qout[:, 0], global_proto)
+        nout = torch.einsum('b d, c d -> b c', nout[:, 0], global_proto)
+
+        # return torch.log(0.5 * (F.softmax(qout, dim=1) + F.softmax(nout, dim=1)))
+        avgprob = 0.5 * (F.softmax(qout, dim=1) + F.softmax(nout, dim=1))
+        avgprob = torch.clamp(avgprob, 1e-6)  # to prevent numerical unstability
+        return torch.log(avgprob)
+
+    def unset_gradcam_hook(self):
+        self._gradcam_hooks[0].remove()
+        self._gradcam_hooks[1].remove()
+        self._gradcam_hooks[0] = None
+        self._gradcam_hooks[1] = None
+        self._gradcam_gradients, self._gradcam_activations = [None], [None]
+
+    def set_gradcam_hook(self):
+        self._gradcam_gradients, self._gradcam_activations = [None], [None]
+
+        def backward_hook(module, grad_input, grad_output):
+            self._gradcam_gradients[0] = grad_output[0]
+            return None
+
+        def forward_hook(module, input, output):
+            self._gradcam_activations[0] = output
+            return None
+
+        self._gradcam_hooks[0] = self.convnet.last_conv.register_backward_hook(
+            backward_hook
+        )
+        self._gradcam_hooks[1] = self.convnet.last_conv.register_forward_hook(
+            forward_hook
+        )

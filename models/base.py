@@ -51,12 +51,12 @@ class BaseLearner(object):
         else:
             return self._network.feature_dim
 
-    def build_rehearsal_memory(self, data_manager, per_class):
+    def build_rehearsal_memory(self, data_manager, per_class, mode = 'default'):
         if self._fixed_memory:
             self._construct_exemplar_unified(data_manager, per_class)
         else:
-            self._reduce_exemplar(data_manager, per_class)
-            self._construct_exemplar(data_manager, per_class)
+            self._reduce_exemplar(data_manager, per_class, mode)
+            self._construct_exemplar(data_manager, per_class, mode)
 
     def save_checkpoint(self, test_acc):
         assert self.args['model_name'] == 'finetune'
@@ -220,7 +220,7 @@ class BaseLearner(object):
 
             self._class_means[class_idx, :] = mean
 
-    def _construct_exemplar(self, data_manager, m):
+    def _construct_exemplar(self, data_manager, m, mode):
         logging.info("Constructing exemplars...({} per classes)".format(m))
         for class_idx in range(self._known_classes, self._total_classes):
             data, targets, idx_dataset = data_manager.get_dataset(
@@ -264,13 +264,22 @@ class BaseLearner(object):
             # uniques = np.unique(selected_exemplars, axis=0)
             # print('Unique elements: {}'.format(len(uniques)))
             selected_exemplars = np.array(selected_exemplars)
+            exemplar_vectors = np.array(exemplar_vectors)
             # exemplar_targets = np.full(m, class_idx)
             exemplar_targets = np.full(selected_exemplars.shape[0], class_idx)
-            self._data_memory = (
-                np.concatenate((self._data_memory, selected_exemplars))
-                if len(self._data_memory) != 0
-                else selected_exemplars
-            )
+
+            if mode == 'default':
+                self._data_memory = (
+                    np.concatenate((self._data_memory, selected_exemplars))
+                    if len(self._data_memory) != 0
+                    else selected_exemplars
+                )
+            else:
+                self._data_memory = (
+                    np.concatenate((self._data_memory, exemplar_vectors))
+                    if len(self._data_memory) != 0
+                    else exemplar_vectors
+                )                
             self._targets_memory = (
                 np.concatenate((self._targets_memory, exemplar_targets))
                 if len(self._targets_memory) != 0
