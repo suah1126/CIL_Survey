@@ -1,7 +1,9 @@
+import copy
 import logging
 import numpy as np
 from tqdm import tqdm
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch import optim
 from torch.nn import functional as F
@@ -9,6 +11,9 @@ from torch.utils.data import DataLoader
 from models.base import BaseLearner
 from utils.inc_net import KNNNet
 from utils.toolkit import target2onehot, tensor2numpy
+
+from einops import rearrange
+from scipy.spatial.distance import cdist
 
 EPSILON = 1e-8
 
@@ -26,7 +31,8 @@ class memknn(BaseLearner):
         super().__init__(args)
         # memknn require pretrained backbone
         self._network = KNNNet(args["convnet_type"], True, args, self._device)
-        self.mode = 'embedding'
+        self._network.to(self._device)
+        self._memory_list = None
         self.k = args['k']
 
     def after_task(self):
@@ -59,6 +65,9 @@ class memknn(BaseLearner):
             test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
         )
 
+        with torch.no_grad():
+            self.build_rehearsal_memory(data_manager, self.samples_per_class)
+
         if self.args['skip'] and self._cur_task==0:
             load_acc = self._network.load_checkpoint(self.args)
 
@@ -76,7 +85,7 @@ class memknn(BaseLearner):
         else:
             self._train(self.train_loader, self.test_loader)
 
-        self.build_rehearsal_memory(data_manager, self.samples_per_class, self.mode)
+        #self.build_rehearsal_memory(data_manager, self.samples_per_class)
         if len(self._multiple_gpus) > 1:
             self._network = self._network.module
 
@@ -86,8 +95,6 @@ class memknn(BaseLearner):
         for k, v in self._network.named_parameters():
             if not 'backbone' in k:
                 param_list.append(v)
-            else:
-                print(k)
         optimizer = optim.SGD(
             param_list,
             # list(self.knnformer.parameters()) + list(self.fc.parameters()),
@@ -100,30 +107,15 @@ class memknn(BaseLearner):
     def _training_step(self, train_loader, test_loader, optimizer):
         prog_bar = tqdm(range(epochs))
         for _, epoch in enumerate(prog_bar):
-            self._network.module.qinformer.train()
-            self._network.module.knnformer.train()
-            self._network.module.convnet.eval()
+            self._network.qinformer.train()
+            self._network.knnformer.train()
+            self._network.convnet.eval()
             losses = 0.0
             correct, total = 0, 0
             for i, (_, inputs, targets) in enumerate(train_loader):
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
-                
-                out = self._network.module.convnet(inputs)
-                print(out)
-                with torch.no_grad():
-                    classwise_sim = torch.einsum('b d, n d -> b n', out, self._data_memory)
-                    # B, N -> B, K
-                    topk_sim, indices = classwise_sim.topk(k=self.k, dim=-1, largest=True, sorted=False)
-
-                    # C, N, D [[B, K]] -> B, K, D
-                    knnemb = self._data_memory[indices]
-
-                    # corresponding_proto = self.global_proto[class_ids]  # self.global_proto_learned(class_ids)
-                    # B, 1, D
-                    tr_q = out.unsqueeze(1)
-                    # (B, 1, D), (B, C, D) -> B, (1 + C), D
-                    tr_knn_cat = torch.cat([tr_q, knnemb], dim=1)
-
+                out = self._network.convnet(inputs)
+                tr_q, tr_knn_cat = self._knn(out)
                 logits = self._network(inputs, tr_q, tr_knn_cat, self._class_means)
                 loss = F.nll_loss(logits, targets)
 
@@ -136,7 +128,6 @@ class memknn(BaseLearner):
                 correct += preds.eq(targets.expand_as(preds)).cpu().sum()
                 total += len(targets)
 
-            scheduler.step()
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
             if epoch % 5 == 0:
                 test_acc = self._compute_accuracy(self._network, test_loader)
@@ -160,7 +151,7 @@ class memknn(BaseLearner):
         logging.info(info)
 
     def _extract_vectors(self, loader):
-        self._network.module.convnet.eval()
+        self._network.convnet.eval()
         vectors, targets = [], []
         for _, _inputs, _targets in loader:
             _targets = _targets.numpy()
@@ -177,3 +168,161 @@ class memknn(BaseLearner):
             targets.append(_targets)
 
         return np.concatenate(vectors), np.concatenate(targets)
+
+    def _reduce_exemplar(self, data_manager, m):
+        logging.info("Reducing exemplars...({} per classes)".format(m))
+        dummy_data, dummy_targets = copy.deepcopy(self._data_memory), copy.deepcopy(self._targets_memory)
+        self._data_memory, self._targets_memory = np.array([]), np.array([])
+
+        for class_idx in range(self._known_classes):
+            mask = np.where(dummy_targets == class_idx)[0]
+            dd, dt = dummy_data[mask][:m], dummy_targets[mask][:m]
+            self._data_memory = (
+                np.concatenate((self._data_memory, dd))
+                if len(self._data_memory) != 0
+                else dd
+            )
+            self._targets_memory = (
+                np.concatenate((self._targets_memory, dt))
+                if len(self._targets_memory) != 0
+                else dt
+            )
+
+        if self._memory_list is not None:
+            dummy_dms = copy.deepcopy(self._memory_list)
+            self._memory_list = dummy_dms[:, :m, :]
+
+    def _construct_exemplar(self, data_manager, m):
+        logging.info("Constructing exemplars...({} per classes)".format(m))
+        for class_idx in range(self._known_classes, self._total_classes):
+            data, targets, idx_dataset = data_manager.get_dataset(
+                np.arange(class_idx, class_idx + 1),
+                source="train",
+                mode="test",
+                ret_data=True,
+            )
+            idx_loader = DataLoader(
+                idx_dataset, batch_size=batch_size, shuffle=False, num_workers=4
+            )
+            vectors, _ = self._extract_vectors(idx_loader)
+            vectors = (vectors.T / (np.linalg.norm(vectors.T, axis=0) + EPSILON)).T
+            class_mean = np.mean(vectors, axis=0)
+            # Select
+            selected_exemplars = []
+            exemplar_vectors = []  # [n, feature_dim]
+            for k in range(1, m + 1):
+                S = np.sum(
+                    exemplar_vectors, axis=0
+                )  # [feature_dim] sum of selected exemplars vectors
+                mu_p = (vectors + S) / k  # [n, feature_dim] sum to all vectors
+                i = np.argmin(np.sqrt(np.sum((class_mean - mu_p) ** 2, axis=1)))
+                selected_exemplars.append(
+                    np.array(data[i])
+                )  # New object to avoid passing by inference
+                exemplar_vectors.append(
+                    np.array(vectors[i])
+                )  # New object to avoid passing by inference
+
+                vectors = np.delete(
+                    vectors, i, axis=0
+                )  # Remove it to avoid duplicative selection
+                data = np.delete(
+                    data, i, axis=0
+                )  # Remove it to avoid duplicative selection
+                
+                if len(vectors) == 0:
+                    break
+
+            selected_exemplars = np.array(selected_exemplars)
+            exemplar_targets = np.full(selected_exemplars.shape[0], class_idx)
+
+            self._data_memory = (
+                np.concatenate((self._data_memory, selected_exemplars))
+                if len(self._data_memory) != 0
+                else selected_exemplars
+            )          
+            self._targets_memory = (
+                np.concatenate((self._targets_memory, exemplar_targets))
+                if len(self._targets_memory) != 0
+                else exemplar_targets
+            )
+            if self._memory_list is None:
+                self._memory_list = torch.Tensor(exemplar_vectors).unsqueeze(0).to(self._device)
+            else:
+                self._memory_list = torch.cat((self._memory_list, torch.Tensor(exemplar_vectors).unsqueeze(0).to(self._device)), dim=0)
+        
+        # norm_proto = self._memory_list / (torch.linalg.matrix_norm(self._memory_list, dim=(1,2)) + EPSILON)
+        # mean_proto = norm_proto
+        self._class_means = self._memory_list.mean(dim=1)
+        self._class_means = self._class_means.detach()
+        self._class_means.requires_grad = False
+
+        #self._memory_list = self._memory_list.detach()
+        self._class_means = F.normalize(self._class_means, p=2, dim=-1)
+        self._memory_list = F.normalize(self._memory_list, p=2, dim=-1)
+
+        self._class_means.requires_grad = False
+        self._memory_list.requires_grad = False
+   
+    def _compute_accuracy(self, model, loader):
+        model.eval()
+        correct, total = 0, 0
+        for i, (_, inputs, targets) in enumerate(loader):
+            inputs = inputs.to(self._device)
+            with torch.no_grad():
+                inputs, targets = inputs.to(self._device), targets.to(self._device)
+                out = self._network.convnet(inputs)
+                tr_q, tr_knn_cat = self._knn(out)
+                logits = self._network(inputs, tr_q, tr_knn_cat, self._class_means)
+            predicts = torch.argmax(logits, dim=1)
+            correct += (predicts == targets).sum()
+            total += len(targets)
+
+        return np.around(tensor2numpy(correct) * 100 / total, decimals=2)
+    
+    def _knn(self, out):
+        with torch.no_grad():
+            classwise_sim = torch.einsum('b d, n d -> b n', out, rearrange(self._memory_list, 'c n d -> (c n) d'))
+            # B, N -> B, K
+            topk_sim, indices = classwise_sim.topk(k=self.k, dim=-1, largest=True, sorted=False)
+
+            # C, N, D [[B, K]] -> B, K, D
+            knnemb = rearrange(self._memory_list, 'c n d -> (c n) d')[indices]
+
+            # corresponding_proto = self.global_proto[class_ids]  # self.global_proto_learned(class_ids)
+            # B, 1, D
+            tr_q = out.unsqueeze(1)
+            # (B, 1, D), (B, C, D) -> B, (1 + C), D
+            tr_knn_cat = torch.cat([tr_q, knnemb], dim=1)
+        
+        return tr_q, tr_knn_cat
+
+    def _eval_cnn(self, loader):
+        self._network.eval()
+        y_pred, y_true = [], []
+        for _, (_, inputs, targets) in enumerate(loader):
+            inputs = inputs.to(self._device)
+            with torch.no_grad():
+                inputs, targets = inputs.to(self._device), targets.to(self._device)
+                out = self._network.convnet(inputs)
+                tr_q, tr_knn_cat = self._knn(out)
+                outputs = self._network(inputs, tr_q, tr_knn_cat, self._class_means)
+            predicts = torch.topk(
+                outputs, k=self.topk, dim=1, largest=True, sorted=True
+            )[
+                1
+            ]  # [bs, topk]
+            y_pred.append(predicts.cpu().numpy())
+            y_true.append(targets.cpu().numpy())
+
+        return np.concatenate(y_pred), np.concatenate(y_true)  # [N, topk]
+
+    def _eval_nme(self, loader, class_means):
+        self._network.eval()
+        vectors, y_true = self._extract_vectors(loader)
+        vectors = (vectors.T / (np.linalg.norm(vectors.T, axis=0) + EPSILON)).T
+        
+        dists = cdist(torch.Tensor.numpy(self._class_means.detach().cpu()), vectors, "sqeuclidean")  # [nb_classes, N]
+        scores = dists.T  # [N, nb_classes], choose the one with the smallest distance
+
+        return np.argsort(scores, axis=1)[:, : self.topk], y_true  # [N, topk]

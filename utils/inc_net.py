@@ -40,6 +40,9 @@ from convs.memo_resnet import get_resnet50_imagenet as memo_resnet50_imagenet
 
 from utils.transformer import TransformerEncoderLayer
 
+import torchvision
+import torch.nn.functional as F
+
 def get_convnet(convnet_type, pretrained=False):
     name = convnet_type.lower()
     if name == "resnet32":
@@ -739,6 +742,7 @@ class KNNNet(BaseNet):
             self.set_gradcam_hook()
 
         self.args = args
+        self.convnet = torchvision.models.resnet18(pretrained=True)
         self.convnet.fc = nn.Identity()
         self.convnet.requires_grad_(requires_grad=False)
         self.dim = 512
