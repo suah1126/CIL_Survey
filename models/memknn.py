@@ -44,10 +44,6 @@ class memknn(BaseLearner):
         self._total_classes = self._known_classes + data_manager.get_task_size(
             self._cur_task
         )
-        # self._network.update_fc(self._total_classes)
-        # logging.info(
-        #     "Learning on {}-{}".format(self._known_classes, self._total_classes)
-        # )
 
         train_dataset = data_manager.get_dataset(
             np.arange(self._known_classes, self._total_classes),
@@ -251,13 +247,11 @@ class memknn(BaseLearner):
             else:
                 self._memory_list = torch.cat((self._memory_list, torch.Tensor(exemplar_vectors).unsqueeze(0).to(self._device)), dim=0)
         
-        # norm_proto = self._memory_list / (torch.linalg.matrix_norm(self._memory_list, dim=(1,2)) + EPSILON)
-        # mean_proto = norm_proto
         self._class_means = self._memory_list.mean(dim=1)
         self._class_means = self._class_means.detach()
         self._class_means.requires_grad = False
 
-        #self._memory_list = self._memory_list.detach()
+        #self._memory_list = self._memory_list.detach() # cpu?
         self._class_means = F.normalize(self._class_means, p=2, dim=-1)
         self._memory_list = F.normalize(self._memory_list, p=2, dim=-1)
 
@@ -321,7 +315,7 @@ class memknn(BaseLearner):
         self._network.eval()
         vectors, y_true = self._extract_vectors(loader)
         vectors = (vectors.T / (np.linalg.norm(vectors.T, axis=0) + EPSILON)).T
-        
+
         dists = cdist(torch.Tensor.numpy(self._class_means.detach().cpu()), vectors, "sqeuclidean")  # [nb_classes, N]
         scores = dists.T  # [N, nb_classes], choose the one with the smallest distance
 

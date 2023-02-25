@@ -137,7 +137,7 @@ def _train(args):
     cost_time = end_time - start_time
     save_time(args, cost_time)
     save_results(args, cnn_curve, nme_curve, no_nme)
-    if args['model_name'] not in ["podnet", "coil"]:
+    if args['model_name'] not in ["podnet", "coil", "memknn"]:
         save_fc(args, model)
     else:
         save_model(args, model)
