@@ -30,7 +30,7 @@ class memknn(BaseLearner):
     def __init__(self, args):
         super().__init__(args)
         # memknn require pretrained backbone
-        self._network = KNNNet(args["convnet_type"], True, args, self._device)
+        self._network = KNNNet(args["convnet_type"], args['pretrained'], args, self._device)
         self._network.to(self._device)
         self._memory_list = None
         self.k = args['k']
@@ -110,9 +110,9 @@ class memknn(BaseLearner):
             correct, total = 0, 0
             for i, (_, inputs, targets) in enumerate(train_loader):
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
-                out = self._network.convnet(inputs)
+                out = self._network.convnet(inputs)['features']
                 tr_q, tr_knn_cat = self._knn(out)
-                logits = self._network(inputs, tr_q, tr_knn_cat, self._class_means)
+                logits = self._network(tr_q, tr_knn_cat, self._class_means)
                 loss = F.nll_loss(logits, targets)
 
                 optimizer.zero_grad()
@@ -153,11 +153,11 @@ class memknn(BaseLearner):
             _targets = _targets.numpy()
             if isinstance(self._network, nn.DataParallel):
                 _vectors = tensor2numpy(
-                    self._network.module.convnet(_inputs.to(self._device))
+                    self._network.module.convnet(_inputs.to(self._device))['features']
                 )
             else:
                 _vectors = tensor2numpy(
-                    self._network.convnet(_inputs.to(self._device))
+                    self._network.convnet(_inputs.to(self._device))['features']
                 )
 
             vectors.append(_vectors)
@@ -265,9 +265,9 @@ class memknn(BaseLearner):
             inputs = inputs.to(self._device)
             with torch.no_grad():
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
-                out = self._network.convnet(inputs)
+                out = self._network.convnet(inputs)['features']
                 tr_q, tr_knn_cat = self._knn(out)
-                logits = self._network(inputs, tr_q, tr_knn_cat, self._class_means)
+                logits = self._network(tr_q, tr_knn_cat, self._class_means)
             predicts = torch.argmax(logits, dim=1)
             correct += (predicts == targets).sum()
             total += len(targets)
@@ -298,14 +298,14 @@ class memknn(BaseLearner):
             inputs = inputs.to(self._device)
             with torch.no_grad():
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
-                out = self._network.convnet(inputs)
+                out = self._network.convnet(inputs)['features']
                 tr_q, tr_knn_cat = self._knn(out)
-                outputs = self._network(inputs, tr_q, tr_knn_cat, self._class_means)
+                outputs = self._network(tr_q, tr_knn_cat, self._class_means)
             predicts = torch.topk(
                 outputs, k=self.topk, dim=1, largest=True, sorted=True
             )[
                 1
-            ]  # [bs, topk]
+            ]# [bs, topk]
             y_pred.append(predicts.cpu().numpy())
             y_true.append(targets.cpu().numpy())
 

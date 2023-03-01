@@ -742,9 +742,10 @@ class KNNNet(BaseNet):
             self.set_gradcam_hook()
 
         self.args = args
-        self.convnet = torchvision.models.resnet18(pretrained=True)
+        if pretrained:
+            #self.convnet = torchvision.models.resnet18(pretrained=True)
+            self.convnet.requires_grad_(requires_grad=False)
         self.convnet.fc = nn.Identity()
-        self.convnet.requires_grad_(requires_grad=False)
         self.dim = 512
         _dtype = torch.float32
         self.qinformer = TransformerEncoderLayer(d_model=self.dim,
@@ -769,13 +770,13 @@ class KNNNet(BaseNet):
                                                  device=device,
                                                  dtype=_dtype,
                                                  )
-        # if args.backbone == 'resnet50':
-        #     self.knnformer = nn.Sequential(
-        #         nn.Linear(2048, self.dim),
-        #         self.knnformer,
-        #     )
+        #if args.backbone == 'resnet50':
+        # self.knnformer = nn.Sequential(
+        #     nn.Linear(64, self.dim),
+        #     self.knnformer,
+        # )
 
-    def forward(self, x, tr_q, tr_knn_cat, global_proto):
+    def forward(self, tr_q, tr_knn_cat, global_proto):
         qout = self.qinformer(tr_q, tr_q, tr_q)
         nout = self.knnformer(tr_q, tr_knn_cat, tr_knn_cat)
 

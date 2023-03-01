@@ -15,3 +15,6 @@ results/
 #slurm
 *.out
 *.sh
+
+result.py
+memknn_nopretrain.py

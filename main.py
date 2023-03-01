@@ -31,7 +31,8 @@ def setup_parser():
     parser.add_argument('--prefix','-p',type=str, help='exp type', default='benchmark', choices=['benchmark', 'fair', 'auc'])
     parser.add_argument('--device','-d', nargs='+', type=int, default=[0,1,2,3])
     parser.add_argument('--debug', action="store_true")
-    parser.add_argument('--skip', action="store_true",)
+    parser.add_argument('--skip', action="store_true")
+    parser.add_argument('--pretrained', action="store_true")
     
     return parser
 
