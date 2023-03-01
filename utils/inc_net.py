@@ -746,7 +746,7 @@ class KNNNet(BaseNet):
             #self.convnet = torchvision.models.resnet18(pretrained=True)
             self.convnet.requires_grad_(requires_grad=False)
         self.convnet.fc = nn.Identity()
-        self.dim = 512
+        self.dim = self.feature_dim
         _dtype = torch.float32
         self.qinformer = TransformerEncoderLayer(d_model=self.dim,
                                                  nhead=8,
@@ -772,7 +772,7 @@ class KNNNet(BaseNet):
                                                  )
         #if args.backbone == 'resnet50':
         # self.knnformer = nn.Sequential(
-        #     nn.Linear(64, self.dim),
+        #     nn.Linear(2048, self.dim),
         #     self.knnformer,
         # )
 
@@ -786,7 +786,7 @@ class KNNNet(BaseNet):
         # return torch.log(0.5 * (F.softmax(qout, dim=1) + F.softmax(nout, dim=1)))
         avgprob = 0.5 * (F.softmax(qout, dim=1) + F.softmax(nout, dim=1))
         avgprob = torch.clamp(avgprob, 1e-6)  # to prevent numerical unstability
-        return torch.log(avgprob)
+        return avgprob
 
     def unset_gradcam_hook(self):
         self._gradcam_hooks[0].remove()

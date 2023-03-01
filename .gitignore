@@ -17,4 +17,4 @@ results/
 *.sh
 
 result.py
-memknn_nopretrain.py
+memknn_*.py
