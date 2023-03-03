@@ -43,6 +43,8 @@ from utils.transformer import TransformerEncoderLayer
 import torchvision
 import torch.nn.functional as F
 
+from einops import rearrange, repeat
+
 def get_convnet(convnet_type, pretrained=False):
     name = convnet_type.lower()
     if name == "resnet32":
@@ -747,9 +749,10 @@ class KNNNet(BaseNet):
             self.convnet.requires_grad_(requires_grad=False)
         self.convnet.fc = nn.Identity()
         self.dim = self.feature_dim
-        _dtype = torch.float32
-        self.qinformer = TransformerEncoderLayer(d_model=self.dim,
-                                                 nhead=8,
+        self.nhead = 8
+        self._dtype = torch.float32
+        self.knnformer2 = TransformerEncoderLayer(d_model=self.dim,
+                                                 nhead=self.nhead,
                                                  dim_feedforward=self.dim,
                                                  dropout=0.0,
                                                  # activation=F.relu,
@@ -757,10 +760,10 @@ class KNNNet(BaseNet):
                                                  batch_first=True,
                                                  norm_first=True,
                                                  device=device,
-                                                 dtype=_dtype,
+                                                 dtype=self._dtype,
                                                  )
         self.knnformer = TransformerEncoderLayer(d_model=self.dim,
-                                                 nhead=8,
+                                                 nhead=self.nhead,
                                                  dim_feedforward=self.dim,
                                                  dropout=0.0,
                                                  # activation=F.relu,
@@ -768,25 +771,62 @@ class KNNNet(BaseNet):
                                                  batch_first=True,
                                                  norm_first=True,
                                                  device=device,
-                                                 dtype=_dtype,
+                                                 dtype=self._dtype,
                                                  )
-        #if args.backbone == 'resnet50':
-        # self.knnformer = nn.Sequential(
-        #     nn.Linear(2048, self.dim),
-        #     self.knnformer,
-        # )
+        self.generic_tokens = self._init_generic_tokens()
+        if self.args['dataset'] == 'imagenet100':
+            self.knnformer = nn.Sequential(
+                nn.Linear(2048, self.dim),
+                self.knnformer,
+            )
 
-    def forward(self, tr_q, tr_knn_cat, global_proto):
-        qout = self.qinformer(tr_q, tr_q, tr_q)
+    def _init_generic_tokens(self):
+        _generic_tokens = torch.empty(self.args['ntokens'], self.dim, dtype=self._dtype, requires_grad=True)
+        generic_tokens = nn.Parameter(_generic_tokens.clone(), requires_grad=True)
+        # moved to self.on_fit_start; should be called after params being loaded to cuda
+        # nn.init.trunc_normal_(self.generic_tokens, mean=0.0, std=0.02)
+        generic_tokens = nn.init.trunc_normal_(generic_tokens, mean=0.0, std=0.02)
+        return generic_tokens
+
+    def forward(self, out, knnemb, global_proto, batchsize):
+        updated_tokens = self.knnformer(repeat(self.generic_tokens, 'm d -> b m d', b=batchsize), knnemb, knnemb)
+        updated_tokens = F.normalize(updated_tokens, p=2, eps=1e-6, dim=-1)
+
+        # no kNN baseline; no prototype update at all!
+        # gtokens = self.generic_tokens.unsqueeze(0)
+        # _updated_proto = self.knnformer2(self.global_proto.unsqueeze(0), gtokens, gtokens)
+
+        # (B, C, D), (B, M, D) -> B, C, D
+        _updated_proto = self.knnformer2(repeat(global_proto, 'c d -> b c d', b=batchsize), updated_tokens, updated_tokens)
+
+        # standization & l2 normalization
+        _updated_proto = self.standardize(_updated_proto)
+
+        # output becomes NaN if it's commented!!
+        updated_proto = F.normalize(_updated_proto, p=2, eps=1e-6, dim=-1)
+
+        sim = torch.einsum('b d, b c d -> b c', out, updated_proto)
+
+        # no kNN baseline; no prototype update at all!
+        # sim = torch.einsum('b d, c d -> b c', out, updated_proto.squeeze(0))
+        return F.softmax(sim, dim=1)
+
+    def forward_m8(self, tr_q, tr_knn_cat, global_proto, T=1):
+        qout = self.knnformer2(tr_q, tr_q, tr_q)
         nout = self.knnformer(tr_q, tr_knn_cat, tr_knn_cat)
 
         qout = torch.einsum('b d, c d -> b c', qout[:, 0], global_proto)
         nout = torch.einsum('b d, c d -> b c', nout[:, 0], global_proto)
 
         # return torch.log(0.5 * (F.softmax(qout, dim=1) + F.softmax(nout, dim=1)))
-        avgprob = 0.5 * (F.softmax(qout, dim=1) + F.softmax(nout, dim=1))
+        avgprob = 0.5 * (F.softmax(qout / T, dim=1) + F.softmax(nout / T, dim=1))
         avgprob = torch.clamp(avgprob, 1e-6)  # to prevent numerical unstability
         return avgprob
+
+    def standardize(self, x, dim=1, eps=1e-6):
+        out = x - x.mean(dim=dim, keepdim=True)
+        out = out / (out.std(dim=dim, keepdim=True) + eps)
+        return out
 
     def unset_gradcam_hook(self):
         self._gradcam_hooks[0].remove()

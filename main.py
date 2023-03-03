@@ -26,6 +26,7 @@ def setup_parser():
     parser.add_argument('--init_cls', '-init', type=int, default=10)
     parser.add_argument('--increment', '-incre', type=int, default=10)
     parser.add_argument('--k', type=int, default=10)
+    parser.add_argument('--ntokens', type=int, default=10)
     parser.add_argument('--model_name','-model', type=str, default=None, required=True)
     parser.add_argument('--convnet_type','-net', type=str, default='resnet32')
     parser.add_argument('--prefix','-p',type=str, help='exp type', default='benchmark', choices=['benchmark', 'fair', 'auc'])

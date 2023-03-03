@@ -17,4 +17,3 @@ results/
 *.sh
 
 result.py
-memknn_*.py
