@@ -78,7 +78,7 @@ class BaseLearner(object):
 
     def _evaluate(self, y_pred, y_true):
         ret = {}
-        grouped = accuracy(y_pred.T[0], y_true, self._known_classes)
+        grouped = accuracy(y_pred, y_true, self._known_classes)
         ret["grouped"] = grouped
         ret["top1"] = grouped["total"]
         ret["top{}".format(self.topk)] = np.around(
@@ -94,7 +94,7 @@ class BaseLearner(object):
 
         if hasattr(self, "_class_means"):
             y_pred, y_true = self._eval_nme(self.test_loader, self._class_means)
-            nme_accy = self._evaluate(y_pred, y_true)
+            nme_accy = self._evaluate(y_pred.T[0], y_true)
         else:
             nme_accy = None
         

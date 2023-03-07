@@ -215,5 +215,4 @@ class iCaRL(BaseLearner):
 def _KD_loss(pred, soft, T):
     pred = torch.log_softmax(pred / T, dim=1)
     soft = torch.softmax(soft / T, dim=1)
-    print(pred.shape, soft.shape)
     return -1 * torch.mul(soft, pred).sum() / pred.shape[0]

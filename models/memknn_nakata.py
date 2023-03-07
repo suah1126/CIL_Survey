@@ -17,16 +17,9 @@ from scipy.spatial.distance import cdist
 
 EPSILON = 1e-8
 
-init_epoch = 200
-init_lr = 0.1
-init_milestones = [60, 120, 170]
-init_lr_decay = 0.1
-init_weight_decay = 0.0005
-
-epochs = 170
+epochs = 1
 lrate = 0.1
 milestones = [80, 120]
-lrate_decay = 0.1
 batch_size = 128
 weight_decay = 5e-4
 num_workers = 8
@@ -43,7 +36,6 @@ class memknn(BaseLearner):
         self.k = args['k']
 
     def after_task(self):
-        self._old_network = self._network.copy().freeze()
         self._known_classes = self._total_classes
         logging.info("Exemplar size: {}".format(self.exemplar_size))
 
@@ -69,8 +61,8 @@ class memknn(BaseLearner):
             test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
         )
 
-        with torch.no_grad():
-            self.build_rehearsal_memory(data_manager, self.samples_per_class)
+        # with torch.no_grad():
+        #     self.build_rehearsal_memory(data_manager, self.samples_per_class)
 
         if self.args['skip'] and self._cur_task==0:
             load_acc = self._network.load_checkpoint(self.args)
@@ -95,37 +87,11 @@ class memknn(BaseLearner):
 
     def _train(self, train_loader, test_loader):
         self._network.to(self._device)
-        if self._old_network is not None:
-            self._old_network.to(self._device)
+        self._memory_list = self._init_memory_list(train_loader)
+        self._training_step(train_loader, test_loader)
 
-        if self._cur_task == 0:
-            optimizer = optim.SGD(
-                self._network.parameters(),
-                momentum=0.9,
-                lr=init_lr,
-                weight_decay=init_weight_decay,
-            )
-            scheduler = optim.lr_scheduler.MultiStepLR(
-                optimizer=optimizer, milestones=init_milestones, gamma=init_lr_decay
-            )
-            self._training_step(train_loader, test_loader, optimizer, scheduler, True)
-        else:
-            optimizer = optim.SGD(
-                self._network.parameters(),
-                lr=lrate,
-                momentum=0.9,
-                weight_decay=weight_decay,
-            )  # 1e-5
-            scheduler = optim.lr_scheduler.MultiStepLR(
-                optimizer=optimizer, milestones=milestones, gamma=lrate_decay
-            )
-            self._training_step(train_loader, test_loader, optimizer, scheduler)
-
-    def _training_step(self, train_loader, test_loader, optimizer, scheduler, init=False):
-        if init:
-            prog_bar = tqdm(range(init_epoch))
-        else:
-            prog_bar = tqdm(range(epochs))
+    def _training_step(self, train_loader, test_loader):
+        prog_bar = tqdm(range(epochs))
         for _, epoch in enumerate(prog_bar):
             self._network.train()
             losses = 0.0
@@ -133,33 +99,10 @@ class memknn(BaseLearner):
             for i, (_, inputs, targets) in enumerate(train_loader):
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
                 out = self._network.convnet(inputs)["features"]
-                tr_q, tr_knn_cat = self._knn(out)
-                logits = self._network(tr_q, tr_knn_cat, self._class_means)
-                logits = torch.log(logits)
-                loss = F.nll_loss(logits, targets)
-                
-                # distillation loss
-                if not init:
-                    out_kd = self._old_network.convnet(inputs)["features"]
-                    tr_q_kd, tr_knn_cat_kd = self._knn(out_kd, True)
-                    logits_kd = self._old_network(tr_q_kd, tr_knn_cat_kd, self._class_means[:self._known_classes, :])
-                    loss_kd = _KD_loss(
-                        logits[:, : self._known_classes],
-                        logits_kd,
-                        T,
-                    )
-                    loss = loss + loss_kd
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                losses += loss.item()
-
-                _, preds = torch.max(logits, dim=1)
+                preds = self._knn(out)
                 correct += preds.eq(targets.expand_as(preds)).cpu().sum()
                 total += len(targets)
 
-            scheduler.step()
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
             if epoch % 5 == 0:
                 test_acc = self._compute_accuracy(self._network, test_loader)
@@ -302,33 +245,25 @@ class memknn(BaseLearner):
             with torch.no_grad():
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
                 out = self._network.convnet(inputs)["features"]
-                tr_q, tr_knn_cat = self._knn(out)
-                logits = self._network(tr_q, tr_knn_cat, self._class_means)
-            predicts = torch.argmax(logits, dim=1)
+                predicts = self._knn(out)
             correct += (predicts == targets).sum()
             total += len(targets)
 
         return np.around(tensor2numpy(correct) * 100 / total, decimals=2)
     
-    def _knn(self, out, old=False):
+    def _knn(self, out):
         with torch.no_grad():
-            if old:
-                classwise_sim = torch.einsum('b d, n d -> b n', out, rearrange(self._memory_list[:self._known_classes, :, :], 'c n d -> (c n) d'))
-            else:
-                classwise_sim = torch.einsum('b d, n d -> b n', out, rearrange(self._memory_list, 'c n d -> (c n) d'))
-            # B, N -> B, K
-            topk_sim, indices = classwise_sim.topk(k=self.k, dim=-1, largest=True, sorted=False)
+            num_samples = self._memory_list.shape[1]
+            all_features = self._memory_list.view([-1, self._memory_list.shape[2]])
 
-            # C, N, D [[B, K]] -> B, K, D
-            knnemb = rearrange(self._memory_list, 'c n d -> (c n) d')[indices]
+            similarity_mat = torch.einsum('b d, n d -> b n', F.normalize(out, dim=-1), F.normalize(all_features, dim=-1))
 
-            # corresponding_proto = self.global_proto[class_ids]  # self.global_proto_learned(class_ids)
-            # B, 1, D
-            tr_q = out.unsqueeze(1)
-            # (B, 1, D), (B, C, D) -> B, (1 + C), D
-            tr_knn_cat = torch.cat([tr_q, knnemb], dim=1)
-        
-        return out.unsqueeze(1), tr_knn_cat
+            topk_sim, indices = similarity_mat.topk(k=self.k, dim=-1, largest=True, sorted=False)
+
+            indices = torch.div(indices, num_samples, rounding_mode='trunc')
+            preds, _ = torch.mode(indices)
+
+        return preds
 
     def _eval_cnn(self, loader):
         self._network.eval()
@@ -338,13 +273,7 @@ class memknn(BaseLearner):
             with torch.no_grad():
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
                 out = self._network.convnet(inputs)["features"]
-                tr_q, tr_knn_cat = self._knn(out)
-                outputs = self._network(tr_q, tr_knn_cat, self._class_means)
-            predicts = torch.topk(
-                outputs, k=self.topk, dim=1, largest=True, sorted=True
-            )[
-                1
-            ]  # [bs, topk]
+                predicts = self._knn(out)
             y_pred.append(predicts.cpu().numpy())
             y_true.append(targets.cpu().numpy())
 
@@ -360,7 +289,30 @@ class memknn(BaseLearner):
 
         return np.argsort(scores, axis=1)[:, : self.topk], y_true  # [N, topk]
 
-def _KD_loss(pred, soft, T):
-    # pred = torch.log_softmax(pred / T, dim=1)
-    # soft = torch.softmax(soft / T, dim=1)
-    return -1 * torch.mul(soft, pred).sum() / pred.shape[0]
+    def _init_memory_list(self, train_loader):
+        max_num_samples = 500
+        memory_list = [None] * 100
+        count = 0
+        with torch.inference_mode():
+            for (_, x, y) in tqdm(train_loader):
+                x = x.to(self._device)
+                out = self._network.convnet(x)['features']
+                for out_i, y_i in zip(out, y):
+                    if memory_list[y_i] is not None and len(memory_list[y_i]) == max_num_samples:
+                        continue
+
+                    out_i = out_i.unsqueeze(0)
+                    if memory_list[y_i] is None:
+                        memory_list[y_i] = [out_i]
+                    else:
+                        memory_list[y_i].append(out_i)
+
+        for c in range(100):
+            memory_list[c] = torch.cat(memory_list[c], dim=0)
+
+        # num classes, num images, dim
+        memory_list = torch.stack(memory_list, dim=0)
+
+        memory_list = memory_list.detach()
+        memory_list.requires_grad = False
+        return memory_list
