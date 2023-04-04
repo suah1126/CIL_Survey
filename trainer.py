@@ -11,6 +11,8 @@ from utils import factory
 from utils.data_manager import DataManager
 from utils.toolkit import ConfigEncoder, count_parameters, save_fc, save_model
 
+import wandb
+
 def train(args):
     seed_list = copy.deepcopy(args["seed"])
     device = copy.deepcopy(args["device"])
@@ -106,8 +108,11 @@ def _train(args):
             no_nme = True if nme_accy is None else False
         else:
             cnn_accy, nme_accy = model.eval_task(save_conf=False)
-        model.after_task()
-        
+        if args['model_name'] == 'memknn':
+            model.after_task(data_manager)
+        else:
+            model.after_task()
+
         if nme_accy is not None:
             logging.info("CNN: {}".format(cnn_accy["grouped"]))
             logging.info("NME: {}".format(nme_accy["grouped"]))
@@ -118,10 +123,13 @@ def _train(args):
             nme_curve["top1"].append(nme_accy["top1"])
             nme_curve["top5"].append(nme_accy["top5"])
 
+            logging.info("CNN average accuracy: {}".format(sum(cnn_curve["top1"])/10))
             logging.info("CNN top1 curve: {}".format(cnn_curve["top1"]))
             logging.info("CNN top5 curve: {}".format(cnn_curve["top5"]))
             logging.info("NME top1 curve: {}".format(nme_curve["top1"]))
             logging.info("NME top5 curve: {}\n".format(nme_curve["top5"]))
+            # wandb.log({"CNN top1 accuracy": cnn_curve["top1"]})
+            # wandb.log({"NME top1 accuracy": nme_curve["top1"]})
         else:
             logging.info("No NME accuracy.")
             logging.info("CNN: {}".format(cnn_accy["grouped"]))
@@ -129,8 +137,10 @@ def _train(args):
             cnn_curve["top1"].append(cnn_accy["top1"])
             cnn_curve["top5"].append(cnn_accy["top5"])
 
+            logging.info("CNN average accuracy: {}".format(sum(cnn_curve["top1"])/10))
             logging.info("CNN top1 curve: {}".format(cnn_curve["top1"]))
             logging.info("CNN top5 curve: {}\n".format(cnn_curve["top5"]))
+            #wandb.log({"CNN top1 accuracy": cnn_curve["top1"]})
     
     end_time = time.time()
     logging.info(f"End Time:{end_time}")

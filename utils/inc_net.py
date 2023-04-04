@@ -44,6 +44,7 @@ import torchvision
 import torch.nn.functional as F
 
 from einops import rearrange, repeat
+import clip
 
 def get_convnet(convnet_type, pretrained=False):
     name = convnet_type.lower()
@@ -123,6 +124,11 @@ def get_convnet(convnet_type, pretrained=False):
     elif name == 'memo_resnet50_imagenet':
         g_blcoks, s_blocks = memo_resnet50_imagenet()
         return g_blcoks, s_blocks
+
+    elif name == 'clipvitb':
+        model, _ = clip.load("ViT-B/32")
+        model.forward = model.encode_image
+        return model
     else:
         raise NotImplementedError("Unknown type {}".format(convnet_type))
 
@@ -131,12 +137,14 @@ class BaseNet(nn.Module):
     def __init__(self, convnet_type, pretrained):
         super(BaseNet, self).__init__()
 
+        #self.feature_dim = 2048 if convnet_type == 'resnet50' else 512
+        self.convnet_type = convnet_type
         self.convnet = get_convnet(convnet_type, pretrained)
         self.fc = None
 
     @property
     def feature_dim(self):
-        return self.convnet.out_dim
+        return 512 if 'clip' in self.convnet_type else self.convnet.out_dim
 
     def extract_vector(self, x):
         return self.convnet(x)["features"]
@@ -193,12 +201,16 @@ class IncrementalNet(BaseNet):
     def __init__(self, convnet_type, pretrained, gradcam=False):
         super().__init__(convnet_type, pretrained)
         self.gradcam = gradcam
+        self.convnet_type = convnet_type
         if hasattr(self, "gradcam") and self.gradcam:
             self._gradcam_hooks = [None, None]
             self.set_gradcam_hook()
 
-        if pretrained:
-            self.convnet.requires_grad_(requires_grad=False)
+        # if pretrained:
+        #     self.convnet.requires_grad_(requires_grad=False)
+
+    def extract_vector(self, x):
+        return self.convnet(x).float() if 'clip' in self.convnet_type else self.convnet(x)["features"]
 
     def update_fc(self, nb_classes):
         fc = self.generate_fc(self.feature_dim, nb_classes)
@@ -229,8 +241,11 @@ class IncrementalNet(BaseNet):
 
     def forward(self, x):
         x = self.convnet(x)
-        out = self.fc(x["features"])
-        out.update(x)
+        if 'clip' in self.convnet_type:
+            out = self.fc(x.float())
+        else:
+            out = self.fc(x["features"])
+            out.update(x)
         if hasattr(self, "gradcam") and self.gradcam:
             out["gradcam_gradients"] = self._gradcam_gradients
             out["gradcam_activations"] = self._gradcam_activations
@@ -749,48 +764,64 @@ class KNNNet(BaseNet):
 
         self.args = args
         if self.pretrained:
-            #self.convnet = torchvision.models.resnet18(pretrained=True)
+        #     #self.convnet = torchvision.models.resnet18(pretrained=True)
             self.convnet.requires_grad_(requires_grad=False)
         self.convnet.fc = nn.Identity()
-        self.dim = self.feature_dim
-        self.nhead = 8
-        self._dtype = torch.float32
-        # self.knnformer2 = TransformerEncoderLayer(d_model=self.dim,
-        #                                          nhead=self.nhead,
-        #                                          dim_feedforward=self.dim,
-        #                                          dropout=0.0,
-        #                                          # activation=F.relu,
-        #                                          layer_norm_eps=1e-05,
-        #                                          batch_first=True,
-        #                                          norm_first=True,
-        #                                          device=device,
-        #                                          dtype=self._dtype,
-        #                                          )
-        # self.knnformer = TransformerEncoderLayer(d_model=self.dim,
-        #                                          nhead=self.nhead,
-        #                                          dim_feedforward=self.dim,
-        #                                          dropout=0.0,
-        #                                          # activation=F.relu,
-        #                                          layer_norm_eps=1e-05,
-        #                                          batch_first=True,
-        #                                          norm_first=True,
-        #                                          device=device,
-        #                                          dtype=self._dtype,
-        #                                          )
-        # self.generic_tokens = self._init_generic_tokens()
-        # if self.args['dataset'] == 'imagenet100':
-        #     self.knnformer = nn.Sequential(
-        #         nn.Linear(2048, self.dim),
-        #         self.knnformer,
-        #     )
+
+
+        if self.args['ver'] != 'nakata':
+            self.dim = self.feature_dim
+            if convnet_type == 'resnet50':
+                self.convnet = nn.Sequential(
+                    self.convnet,
+                    nn.Linear(2048, self.dim),
+                )
+            self.nhead = 8
+            self._dtype = torch.float32
+            self.knnformer2 = TransformerEncoderLayer(d_model=self.dim,
+                                                    nhead=self.nhead,
+                                                    dim_feedforward=self.dim,
+                                                    dropout=0.0,
+                                                    # activation=F.relu,
+                                                    layer_norm_eps=1e-05,
+                                                    batch_first=True,
+                                                    norm_first=True,
+                                                    device=device,
+                                                    dtype=self._dtype,
+                                                    )
+            self.knnformer = TransformerEncoderLayer(d_model=self.dim,
+                                                    nhead=self.nhead,
+                                                    dim_feedforward=self.dim,
+                                                    dropout=0.0,
+                                                    # activation=F.relu,
+                                                    layer_norm_eps=1e-05,
+                                                    batch_first=True,
+                                                    norm_first=True,
+                                                    device=device,
+                                                    dtype=self._dtype,
+                                                    )
+
+        
+        if 'm8' in self.args['ver']:
+            self.forward = self.forward_m8
+        elif self.args['ver'] == 'm18':
+            self.forward = self.forward_m18
+            self.generic_tokens = self._init_generic_tokens()
+        elif self.args['ver'] == 'nakata':
+            self.forward = self.forward_nakata
 
     def _init_generic_tokens(self):
         _generic_tokens = torch.empty(self.args['ntokens'], self.dim, dtype=self._dtype, requires_grad=True)
         generic_tokens = nn.Parameter(_generic_tokens.clone(), requires_grad=True)
         # moved to self.on_fit_start; should be called after params being loaded to cuda
         # nn.init.trunc_normal_(self.generic_tokens, mean=0.0, std=0.02)
-        generic_tokens = nn.init.trunc_normal_(generic_tokens, mean=0.0, std=0.02)
         return generic_tokens
+
+    # def extract_vector(self, x):
+    #     return self.convnet(x).float()
+
+    def norm_generic_tokens(self):
+        self.generic_tokens = nn.init.trunc_normal_(self.generic_tokens, mean=0.0, std=0.02)
 
     def forward_m18(self, out, knnemb, global_proto, batchsize):
         updated_tokens = self.knnformer(repeat(self.generic_tokens, 'm d -> b m d', b=batchsize), knnemb, knnemb)
@@ -828,35 +859,7 @@ class KNNNet(BaseNet):
         return avgprob
 
     def forward_nakata(self, x):
-        def majority_vote(input):
-            stack = []
-            count = [0]*self.num_classes
-            for item in input:
-                count[item.cpu().item()] += 1
-                if not stack or stack[-1] == item:
-                    stack.append(item)
-                else:
-                    stack.pop()
-
-            # onehot = (input[0] if not stack else stack[0]).cpu().item() # real majority vote
-            onehot = torch.argmax(torch.tensor(count)).item() # just vote
-            result = torch.tensor([0.]*self.num_classes)
-            result[onehot] = 1.0
-
-            return result.to(self.device)
-
-        with torch.no_grad():
-            num_samples = self.memory_list.shape[1]
-            all_features = self.memory_list.view([-1, self.memory_list.shape[2]])
-
-            similarity_mat = torch.einsum('b d, n d -> b n', F.normalize(out, dim=-1), F.normalize(all_features, dim=-1))
-
-            topk_sim, indices = similarity_mat.topk(k=self.args.k, dim=-1, largest=True, sorted=False)
-
-            indices = torch.div(indices, num_samples, rounding_mode='trunc')
-            voting_result = torch.stack(list(map(majority_vote, indices)))
-
-        return voting_result
+        return self.convnet(x)['features']
 
     def standardize(self, x, dim=1, eps=1e-6):
         out = x - x.mean(dim=dim, keepdim=True)

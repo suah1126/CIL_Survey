@@ -51,7 +51,7 @@ class BaseLearner(object):
         else:
             return self._network.feature_dim
 
-    def build_rehearsal_memory(self, data_manager, per_class, mode = 'default'):
+    def build_rehearsal_memory(self, data_manager, per_class):
         if self._fixed_memory:
             self._construct_exemplar_unified(data_manager, per_class)
         else:
@@ -78,7 +78,7 @@ class BaseLearner(object):
 
     def _evaluate(self, y_pred, y_true):
         ret = {}
-        grouped = accuracy(y_pred, y_true, self._known_classes)
+        grouped = accuracy(y_pred.T[0], y_true, self._known_classes)
         ret["grouped"] = grouped
         ret["top1"] = grouped["total"]
         ret["top{}".format(self.topk)] = np.around(
@@ -94,7 +94,7 @@ class BaseLearner(object):
 
         if hasattr(self, "_class_means"):
             y_pred, y_true = self._eval_nme(self.test_loader, self._class_means)
-            nme_accy = self._evaluate(y_pred.T[0], y_true)
+            nme_accy = self._evaluate(y_pred, y_true)
         else:
             nme_accy = None
         
@@ -264,15 +264,13 @@ class BaseLearner(object):
             # uniques = np.unique(selected_exemplars, axis=0)
             # print('Unique elements: {}'.format(len(uniques)))
             selected_exemplars = np.array(selected_exemplars)
-            exemplar_vectors = np.array(exemplar_vectors)
             # exemplar_targets = np.full(m, class_idx)
             exemplar_targets = np.full(selected_exemplars.shape[0], class_idx)
-
             self._data_memory = (
                 np.concatenate((self._data_memory, selected_exemplars))
                 if len(self._data_memory) != 0
                 else selected_exemplars
-            )          
+            )
             self._targets_memory = (
                 np.concatenate((self._targets_memory, exemplar_targets))
                 if len(self._targets_memory) != 0

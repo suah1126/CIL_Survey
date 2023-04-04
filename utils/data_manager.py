@@ -50,6 +50,8 @@ class DataManager(object):
             )
         elif mode == "test":
             trsf = transforms.Compose([*self._test_trsf, *self._common_trsf])
+        elif mode == "clip":
+            trsf = transforms.Compose([*self._clip_trsf])
         else:
             raise ValueError("Unknown mode {}.".format(mode))
 
@@ -147,6 +149,7 @@ class DataManager(object):
         self._train_trsf = idata.train_trsf
         self._test_trsf = idata.test_trsf
         self._common_trsf = idata.common_trsf
+        self._clip_trsf = idata.clip_trsf
 
         # Order
         order = [i for i in range(len(np.unique(self._train_targets)))]

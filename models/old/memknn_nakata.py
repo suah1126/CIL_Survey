@@ -14,17 +14,18 @@ from utils.toolkit import target2onehot, tensor2numpy
 
 from einops import rearrange
 from scipy.spatial.distance import cdist
+import torchvision
+import clip
 
 EPSILON = 1e-8
 
 epochs = 1
 lrate = 0.1
 milestones = [80, 120]
-batch_size = 128
+batch_size = 256
 weight_decay = 5e-4
 num_workers = 8
 T = 2
-
 
 class memknn(BaseLearner):
     def __init__(self, args):
@@ -44,15 +45,15 @@ class memknn(BaseLearner):
         self._total_classes = self._known_classes + data_manager.get_task_size(
             self._cur_task
         )
-
         train_dataset = data_manager.get_dataset(
             np.arange(self._known_classes, self._total_classes),
             source="train",
             mode="train",
             appendent=self._get_memory(),
         )
+        
         self.train_loader = DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
+            train_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
         )
         test_dataset = data_manager.get_dataset(
             np.arange(0, self._total_classes), source="test", mode="test"
@@ -61,8 +62,8 @@ class memknn(BaseLearner):
             test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
         )
 
-        # with torch.no_grad():
-        #     self.build_rehearsal_memory(data_manager, self.samples_per_class)
+        with torch.no_grad():
+            self.build_rehearsal_memory(data_manager, self.samples_per_class)
 
         if self.args['skip'] and self._cur_task==0:
             load_acc = self._network.load_checkpoint(self.args)
@@ -76,7 +77,10 @@ class memknn(BaseLearner):
                 cur_test_acc = self._compute_accuracy(self._network, self.test_loader)
                 logging.info(f"Loaded_Test_Acc:{load_acc} Cur_Test_Acc:{cur_test_acc}")
             else:
-                self._train(self.train_loader, self.test_loader) 
+                
+                self._network.to(self._device)
+                self._memory_list = self._init_memory_list(self.train_loader)
+                #self._train(self.train_loader, self.test_loader) 
                 self._compute_accuracy(self._network, self.test_loader)
         else:
             self._train(self.train_loader, self.test_loader)
@@ -98,7 +102,7 @@ class memknn(BaseLearner):
             correct, total = 0, 0
             for i, (_, inputs, targets) in enumerate(train_loader):
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
-                out = self._network.convnet(inputs)["features"]
+                out = self._network.convnet(inputs)['features']
                 preds = self._knn(out)
                 correct += preds.eq(targets.expand_as(preds)).cpu().sum()
                 total += len(targets)
@@ -133,11 +137,11 @@ class memknn(BaseLearner):
                 _targets = _targets.numpy()
                 if isinstance(self._network, nn.DataParallel):
                     _vectors = tensor2numpy(
-                        self._network.convnet(_inputs.to(self._device))["features"]
+                        self._network.convnet(_inputs.to(self._device))['features']
                     )
                 else:
                     _vectors = tensor2numpy(
-                        self._network.convnet(_inputs.to(self._device))["features"]
+                        self._network.convnet(_inputs.to(self._device))['features']
                     )
 
                 vectors.append(_vectors)
@@ -244,7 +248,7 @@ class memknn(BaseLearner):
             inputs = inputs.to(self._device)
             with torch.no_grad():
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
-                out = self._network.convnet(inputs)["features"]
+                out = self._network.convnet(inputs)#['features']
                 predicts = self._knn(out)
             correct += (predicts == targets).sum()
             total += len(targets)
@@ -269,10 +273,9 @@ class memknn(BaseLearner):
         self._network.eval()
         y_pred, y_true = [], []
         for _, (_, inputs, targets) in enumerate(loader):
-            inputs = inputs.to(self._device)
             with torch.no_grad():
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
-                out = self._network.convnet(inputs)["features"]
+                out = self._network.convnet(inputs)#['features']
                 predicts = self._knn(out)
             y_pred.append(predicts.cpu().numpy())
             y_true.append(targets.cpu().numpy())
@@ -290,13 +293,14 @@ class memknn(BaseLearner):
         return np.argsort(scores, axis=1)[:, : self.topk], y_true  # [N, topk]
 
     def _init_memory_list(self, train_loader):
+        self._network.eval()
         max_num_samples = 500
         memory_list = [None] * 100
         count = 0
         with torch.inference_mode():
             for (_, x, y) in tqdm(train_loader):
                 x = x.to(self._device)
-                out = self._network.convnet(x)['features']
+                out = self._network.convnet(x)
                 for out_i, y_i in zip(out, y):
                     if memory_list[y_i] is not None and len(memory_list[y_i]) == max_num_samples:
                         continue
@@ -315,4 +319,5 @@ class memknn(BaseLearner):
 
         memory_list = memory_list.detach()
         memory_list.requires_grad = False
+        print(memory_list.mean(dim=1))
         return memory_list
