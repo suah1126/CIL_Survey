@@ -39,6 +39,7 @@ from convs.memo_resnet import get_resnet34_imagenet as memo_resnet34_imagenet
 from convs.memo_resnet import get_resnet50_imagenet as memo_resnet50_imagenet
 
 from utils.transformer import TransformerEncoderLayer
+from models.transformer import ResidualAttentionBlock
 
 import torchvision
 import torch.nn.functional as F
@@ -64,7 +65,7 @@ def get_convnet(convnet_type, pretrained=False):
         return cosine_resnet34(pretrained=pretrained)
     elif name == "cosine_resnet50":
         return cosine_resnet50(pretrained=pretrained)
-    
+
     # MEMO benchmark backbone
     elif name == 'memo_resnet18':
         _basenet, _adaptive_net = get_memo_resnet18()
@@ -72,7 +73,7 @@ def get_convnet(convnet_type, pretrained=False):
     elif name == 'memo_resnet32':
         _basenet, _adaptive_net = get_memo_resnet32()
         return _basenet, _adaptive_net
-    
+
     # AUC
     ## cifar
     elif name == 'conv2':
@@ -83,7 +84,7 @@ def get_convnet(convnet_type, pretrained=False):
         return resnet20_cifar()
     elif name == 'resnet26_cifar':
         return resnet26_cifar()
-    
+
     elif name == 'memo_conv2':
         g_blocks, s_blocks = memo_conv2_cifar() # generalized/specialized
         return g_blocks, s_blocks
@@ -96,7 +97,7 @@ def get_convnet(convnet_type, pretrained=False):
     elif name == 'memo_resnet26_cifar':
         g_blocks, s_blocks = memo_resnet26_cifar() # generalized/specialized
         return g_blocks, s_blocks
-    
+
     ## imagenet
     elif name == 'conv4':
         return conv4_imagenet()
@@ -108,7 +109,7 @@ def get_convnet(convnet_type, pretrained=False):
         return resnet34_imagenet()
     elif name == 'resnet50_imagenet':
         return resnet50_imagenet()
-    
+
     elif name == 'memo_conv4':
         g_blcoks, s_blocks = memo_conv4_imagenet()
         return g_blcoks, s_blocks
@@ -178,10 +179,10 @@ class BaseNet(nn.Module):
         self.eval()
 
         return self
-    
+
     def load_checkpoint(self, args):
         if args["init_cls"] == 50:
-            pkl_name = "{}_{}_{}_B{}_Inc{}".format( 
+            pkl_name = "{}_{}_{}_B{}_Inc{}".format(
                 args["dataset"],
                 args["seed"],
                 args["convnet_type"],
@@ -479,7 +480,7 @@ class DERNet(nn.Module):
         gamma = meanold / meannew
         print("alignweights,gamma=", gamma)
         self.fc.weight.data[-increment:, :] *= gamma
-    
+
     def load_checkpoint(self, args):
         checkpoint_name = f"checkpoints/finetune_{args['csv_name']}_0.pkl"
         model_infos = torch.load(checkpoint_name)
@@ -603,11 +604,11 @@ class FOSTERNet(nn.Module):
         gamma = meanold / meannew * (value ** (old / increment))
         logging.info("align weights, gamma = {} ".format(gamma))
         self.fc.weight.data[-increment:, :] *= gamma
-    
+
 
     def load_checkpoint(self, args):
         if args["init_cls"] == 50:
-            pkl_name = "{}_{}_{}_B{}_Inc{}".format( 
+            pkl_name = "{}_{}_{}_B{}_Inc{}".format(
                 args["dataset"],
                 args["seed"],
                 args["convnet_type"],
@@ -642,7 +643,7 @@ class AdaptiveNet(nn.Module):
         if self.out_dim is None:
             return 0
         return self.out_dim*len(self.AdaptiveExtractors)
-    
+
     def extract_vector(self, x):
         base_feature_map = self.TaskAgnosticExtractor(x)
         features = [extractor(base_feature_map) for extractor in self.AdaptiveExtractors]
@@ -655,12 +656,12 @@ class AdaptiveNet(nn.Module):
         features = torch.cat(features, 1)
         out=self.fc(features) #{logits: self.fc(features)}
 
-        aux_logits=self.aux_fc(features[:,-self.out_dim:])["logits"] 
+        aux_logits=self.aux_fc(features[:,-self.out_dim:])["logits"]
 
         out.update({"aux_logits":aux_logits,"features":features})
         out.update({"base_features":base_feature_map})
         return out
-                
+
         '''
         {
             'features': features
@@ -668,7 +669,7 @@ class AdaptiveNet(nn.Module):
             'aux_logits':aux_logits
         }
         '''
-        
+
     def update_fc(self,nb_classes):
         _ , _new_extractor = get_convnet(self.convnet_type)
         if len(self.AdaptiveExtractors)==0:
@@ -679,8 +680,8 @@ class AdaptiveNet(nn.Module):
 
         if self.out_dim is None:
             logging.info(self.AdaptiveExtractors[-1])
-            self.out_dim=self.AdaptiveExtractors[-1].feature_dim        
-        fc = self.generate_fc(self.feature_dim, nb_classes)             
+            self.out_dim=self.AdaptiveExtractors[-1].feature_dim
+        fc = self.generate_fc(self.feature_dim, nb_classes)
         if self.fc is not None:
             nb_output = self.fc.out_features
             weight = copy.deepcopy(self.fc.weight.data)
@@ -694,7 +695,7 @@ class AdaptiveNet(nn.Module):
         new_task_size = nb_classes - sum(self.task_sizes)
         self.task_sizes.append(new_task_size)
         self.aux_fc=self.generate_fc(self.out_dim,new_task_size+1)
- 
+
     def generate_fc(self, in_dim, out_dim):
         fc = SimpleLinear(in_dim, out_dim)
         return fc
@@ -711,10 +712,10 @@ class AdaptiveNet(nn.Module):
         gamma=meanold/meannew
         print('alignweights,gamma=',gamma)
         self.fc.weight.data[-increment:,:]*=gamma
-    
+
     def load_checkpoint(self, args):
         if args["init_cls"] == 50:
-            pkl_name = "{}_{}_{}_B{}_Inc{}".format( 
+            pkl_name = "{}_{}_{}_B{}_Inc{}".format(
                 args["dataset"],
                 args["seed"],
                 args["convnet_type"],
@@ -768,14 +769,11 @@ class KNNNet(BaseNet):
             self.convnet.requires_grad_(requires_grad=False)
         self.convnet.fc = nn.Identity()
 
-
-        if self.args['ver'] != 'nakata':
-            self.dim = self.feature_dim
-            if convnet_type == 'resnet50':
-                self.convnet = nn.Sequential(
-                    self.convnet,
-                    nn.Linear(2048, self.dim),
-                )
+        self.dim = self.feature_dim
+        if self.args['ver'] == 'p19_1':
+            self.attn_txt = ResidualAttentionBlock(d_model=self.dim, n_head=1)
+            self.attn_img = ResidualAttentionBlock(d_model=self.dim, n_head=1)
+        else:
             self.nhead = 8
             self._dtype = torch.float32
             self.knnformer2 = TransformerEncoderLayer(d_model=self.dim,
@@ -801,7 +799,6 @@ class KNNNet(BaseNet):
                                                     dtype=self._dtype,
                                                     )
 
-        
         if 'm8' in self.args['ver']:
             self.forward = self.forward_m8
         elif self.args['ver'] == 'm18':
@@ -809,6 +806,8 @@ class KNNNet(BaseNet):
             self.generic_tokens = self._init_generic_tokens()
         elif self.args['ver'] == 'nakata':
             self.forward = self.forward_nakata
+        elif self.args['ver'] == 'p19_1':
+            self.forward = self.forward_p19_1
 
     def _init_generic_tokens(self):
         _generic_tokens = torch.empty(self.args['ntokens'], self.dim, dtype=self._dtype, requires_grad=True)
@@ -865,6 +864,26 @@ class KNNNet(BaseNet):
         out = x - x.mean(dim=dim, keepdim=True)
         out = out / (out.std(dim=dim, keepdim=True) + eps)
         return out
+
+    def forward_p19_1(self, clipfeat, kv_txt, kv_img, txt_proto, img_proto, dim):
+        out_txt = self.attn_txt(clipfeat.unsqueeze(1), kv_txt, kv_txt).squeeze(1)
+        out_img = self.attn_img(clipfeat.unsqueeze(1), kv_img, kv_img).squeeze(1)
+
+        out_txt_ = F.normalize(out_txt, dim=-1, p=2)
+        out_img_ = F.normalize(out_img, dim=-1, p=2)
+        clipfeat_ = F.normalize(clipfeat, dim=-1, p=2)
+        proto_txt_ = F.normalize(txt_proto.to(clipfeat.device), dim=-1, p=2)
+        proto_img_ = F.normalize(img_proto.to(clipfeat.device), dim=-1, p=2)
+
+        base_scale = 8.
+        knn_scale = 32.
+        sim_clip = torch.einsum('c d, b d -> b c', proto_txt_, clipfeat_) * base_scale
+        sim_txt = torch.einsum('c d, b d -> b c', proto_img_, out_txt_) * knn_scale
+        sim_img = torch.einsum('c d, b d -> b c', proto_txt_, out_img_) * knn_scale
+
+        sim = sim_clip + sim_txt + sim_img
+
+        return sim
 
     def unset_gradcam_hook(self):
         self._gradcam_hooks[0].remove()

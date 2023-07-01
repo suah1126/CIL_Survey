@@ -17,13 +17,13 @@ from scipy.spatial.distance import cdist
 
 EPSILON = 1e-8
 
-init_epoch = 150
+init_epoch = 1
 init_lr = 0.0001
 init_milestones = [60, 120]
 init_lr_decay = 0.5
 init_weight_decay = 0.0005
 
-epochs = 150
+epochs = 1
 lrate = 0.0001
 milestones = [60, 120]
 lrate_decay = 0.5
@@ -40,6 +40,7 @@ class memknn(BaseLearner):
         self._network = KNNNet(args["convnet_type"], args['pretrained'], args, self._device)
         self._network.to(self._device)
         self._memory_list = None
+        self._text_memory_list = None
         self.k = args['k']
         self.model = args['ver']
         self.eval = args['eval']
@@ -47,7 +48,7 @@ class memknn(BaseLearner):
         self.distillation = args['distillation']
         self.normalize = args['normalize']
 
-        if 'clip' in self.convnet_type: 
+        if 'clip' in self.convnet_type:
             self.train_mode = 'clip'
             self.test_mode = 'clip'
         else:
@@ -76,6 +77,7 @@ class memknn(BaseLearner):
             self._cur_task
         )
 
+        # image
         train_dataset = data_manager.get_dataset(
             np.arange(self._known_classes, self._total_classes),
             source="train",
@@ -90,6 +92,17 @@ class memknn(BaseLearner):
         )
         self.test_loader = DataLoader(
             test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
+        )
+
+        # text
+        text_dataset = data_manager.get_text_dataset(
+            np.arange(self._known_classes, self._total_classes),
+            source="train",
+            mode=self.train_mode,
+            appendent=self._get_text_memory(),
+        )
+        self.text_loader = DataLoader(
+            text_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
         )
 
         with torch.no_grad():
@@ -110,7 +123,7 @@ class memknn(BaseLearner):
                     cur_test_acc = self._compute_accuracy(self._network, self.test_loader)
                     logging.info(f"Loaded_Test_Acc:{load_acc} Cur_Test_Acc:{cur_test_acc}")
                 else:
-                    self._train(self.train_loader, self.test_loader) 
+                    self._train(self.train_loader, self.test_loader)
                     self._compute_accuracy(self._network, self.test_loader)
             else:
                 self._train(self.train_loader, self.test_loader)
@@ -130,7 +143,7 @@ class memknn(BaseLearner):
                     param_list.append(v)
             else:
                 param_list.append(v)
-    
+
         if self._cur_task == 0:
             optimizer = optim.SGD(
                 param_list,
@@ -169,6 +182,7 @@ class memknn(BaseLearner):
                 logits = self._step(inputs, True)
                 loss = F.nll_loss(logits, targets)
 
+                '''
                 # distillation loss
                 if self.distillation and not init:
                     logits_kd = self._distillation_step(inputs)
@@ -177,6 +191,7 @@ class memknn(BaseLearner):
                                     logits_kd,
                                     T,)
                     loss = loss + loss_kd
+                '''
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -225,6 +240,10 @@ class memknn(BaseLearner):
             knnemb = self._knn_18(out, training)
             logits = self._network(out, knnemb, self._class_means, out.shape[0])
             logits = torch.log(logits)
+        elif self.model == 'p19_1':
+            txtknn, imgknn = self._knn_p19_1(out, training)
+            logits = self._network(out, txtknn, imgknn, self._text_class_means, self._class_means, out.shape[0])
+            logits = torch.log_softmax(logits, dim=-1)
         elif self.model == 'nakata':
             preds = self._knn_nakata(out, training)
             logits = F.one_hot(preds, num_classes=self._total_classes)
@@ -242,7 +261,10 @@ class memknn(BaseLearner):
         elif self.model == 'm18':
             knnemb_kd = self._knn_18(out_kd, True, True)
             logits_kd = self._old_network(out, knnemb_kd, self._class_means[:self._known_classes, :], out_kd.shape[0])
-        
+        elif self.model == 'p19_1':
+            txtknn_kd, imgknn_kd = self._knn_p19_1(out_kd, training=True, old=True)
+            logits_kd = self._old_network(out_kd, txtknn_kd, imgknn_kd, self._text_class_means[:self._known_classes, :], self._class_means[:self._known_classes, :], out_kd.shape[0])
+
         return logits_kd
 
     def _extract_vectors(self, loader):
@@ -265,8 +287,28 @@ class memknn(BaseLearner):
 
         return np.concatenate(vectors), np.concatenate(targets)
 
+    def _extract_text_vectors(self, loader):
+        self._network.convnet.eval()
+        with torch.no_grad():
+            vectors, targets = [], []
+            for _, _inputs, _targets in loader:
+                _targets = _targets.numpy()
+                if isinstance(self._network, nn.DataParallel):
+                    _vectors = tensor2numpy(
+                        self._network.convnet.encode_text(_inputs.to(self._device)).float()
+                    )
+                else:
+                    _vectors = tensor2numpy(
+                        self._network.convnet.encode_text(_inputs.to(self._device)).float()
+                    )
+
+                vectors.append(_vectors)
+                targets.append(_targets)
+
+        return np.concatenate(vectors), np.concatenate(targets)
+
     def _reduce_exemplar(self, data_manager, m):
-        logging.info("Reducing exemplars...({} per classes)".format(m))
+        logging.info("Reducing memknn exemplars...({} per classes)".format(m))
         dummy_data, dummy_targets = copy.deepcopy(self._data_memory), copy.deepcopy(self._targets_memory)
         self._data_memory, self._targets_memory = np.array([]), np.array([])
 
@@ -286,10 +328,35 @@ class memknn(BaseLearner):
 
         if self._memory_list is not None:
             dummy_dms = copy.deepcopy(self._memory_list)
-            self._memory_list = dummy_dms[:, :m, :]
+            # self._memory_list = dummy_dms[:, :m, :]
+            self._memory_list = [x[:m] for x in dummy_dms]
+
+    def _reduce_text_exemplar(self, data_manager, m):
+        logging.info("Reducing memknn text exemplars...({} per classes)".format(m))
+        dummy_data, dummy_targets = copy.deepcopy(self._text_data_memory), copy.deepcopy(self._text_targets_memory)
+        self._text_data_memory, self._text_targets_memory = np.array([]), np.array([])
+
+        for class_idx in range(self._known_classes):
+            mask = np.where(dummy_targets == class_idx)[0]
+            dd, dt = dummy_data[mask][:m], dummy_targets[mask][:m]
+            self._text_data_memory = (
+                np.concatenate((self._text_data_memory, dd))
+                if len(self._text_data_memory) != 0
+                else dd
+            )
+            self._text_targets_memory = (
+                np.concatenate((self._text_targets_memory, dt))
+                if len(self._text_targets_memory) != 0
+                else dt
+            )
+
+        if self._text_memory_list is not None:
+            dummy_dms = copy.deepcopy(self._text_memory_list)
+            # self._text_memory_list = dummy_dms[:, :m, :]
+            self._text_memory_list = [x[:m] for x in dummy_dms]
 
     def _construct_exemplar(self, data_manager, m, init=True):
-        logging.info("Constructing exemplars...({} per classes)".format(m))
+        logging.info("Constructing memknn exemplars...({} per classes)".format(m))
         for class_idx in range(self._known_classes, self._total_classes):
             data, targets, idx_dataset = data_manager.get_dataset(
                 np.arange(class_idx, class_idx + 1),
@@ -325,7 +392,7 @@ class memknn(BaseLearner):
                 data = np.delete(
                     data, i, axis=0
                 )  # Remove it to avoid duplicative selection
-                
+
                 if len(vectors) == 0:
                     break
 
@@ -349,22 +416,103 @@ class memknn(BaseLearner):
                 self._targets_memory[idx:idx+m] = exemplar_targets
 
             if self._memory_list is None:
-                self._memory_list = torch.Tensor(exemplar_vectors).unsqueeze(0).to(self._device)
+                self._memory_list = [torch.Tensor(exemplar_vectors).to(self._device)]
             elif init:
-                self._memory_list = torch.cat((self._memory_list, torch.Tensor(exemplar_vectors).unsqueeze(0).to(self._device)), dim=0)
+                # self._memory_list = torch.cat((self._memory_list, torch.Tensor(exemplar_vectors).unsqueeze(0).to(self._device)), dim=0)
+                self._memory_list.append(torch.Tensor(exemplar_vectors).to(self._device))
             else:
-                self._memory_list[class_idx, :, :] = torch.Tensor(exemplar_vectors).unsqueeze(0).to(self._device)
-        self._class_means = self._memory_list.mean(dim=1)
+                assert False, "let's don't assume we modify img memory online"
+                # self._memory_list[class_idx, :, :] = torch.Tensor(exemplar_vectors).unsqueeze(0).to(self._device)
+        # self._class_means = self._memory_list.mean(dim=1)
+        self._class_means = torch.stack([x.mean(dim=0) for x in self._memory_list], dim=0)
         self._class_means = self._class_means.detach()
 
-        self._memory_list = self._memory_list.detach() # cpu?
         if self.normalize:
             self._class_means = F.normalize(self._class_means, p=2, dim=-1)
         #self._memory_list = F.normalize(self._memory_list, p=2, dim=-1)
 
         self._class_means.requires_grad = False
-        self._memory_list.requires_grad = False
-   
+
+    def _construct_text_exemplar(self, data_manager, m, init=True):
+        logging.info("Constructing memknn text exemplars...({} per classes)".format(m))
+        for class_idx in range(self._known_classes, self._total_classes):
+            data, targets, idx_dataset = data_manager.get_text_dataset(
+                np.arange(class_idx, class_idx + 1),
+                source="train",
+                mode="test",
+                ret_data=True,
+            )
+            idx_loader = DataLoader(
+                idx_dataset, batch_size=batch_size, shuffle=False, num_workers=4
+            )
+            vectors, _ = self._extract_text_vectors(idx_loader)
+            vectors = (vectors.T / (np.linalg.norm(vectors.T, axis=0) + EPSILON)).T
+            class_mean = np.mean(vectors, axis=0)
+
+            # Select
+            selected_exemplars = []
+            exemplar_vectors = []  # [n, feature_dim]
+            for k in range(1, m + 1):
+                S = np.sum(
+                    exemplar_vectors, axis=0
+                )  # [feature_dim] sum of selected exemplars vectors
+                mu_p = (vectors + S) / k  # [n, feature_dim] sum to all vectors
+                i = np.argmin(np.sqrt(np.sum((class_mean - mu_p) ** 2, axis=1)))
+                selected_exemplars.append(
+                    np.array(data[i])
+                )  # New object to avoid passing by inference
+                exemplar_vectors.append(
+                    np.array(vectors[i])
+                )  # New object to avoid passing by inference
+
+                vectors = np.delete(
+                    vectors, i, axis=0
+                )  # Remove it to avoid duplicative selection
+                data = np.delete(
+                    data, i, axis=0
+                )  # Remove it to avoid duplicative selection
+
+                if len(vectors) == 0:
+                    break
+
+            selected_exemplars = np.array(selected_exemplars)
+            exemplar_targets = np.full(selected_exemplars.shape[0], class_idx)
+
+            if init:
+                self._text_data_memory = (
+                    np.concatenate((self._text_data_memory, selected_exemplars))
+                    if len(self._text_data_memory) != 0
+                    else selected_exemplars
+                )
+                self._text_targets_memory = (
+                    np.concatenate((self._text_targets_memory, exemplar_targets))
+                    if len(self._text_targets_memory) != 0
+                    else exemplar_targets
+                )
+            else:
+                idx = m * class_idx
+                self._text_data_memory[idx:idx+m] = selected_exemplars
+                self._text_targets_memory[idx:idx+m] = exemplar_targets
+
+            if self._text_memory_list is None:
+                self._text_memory_list = [torch.Tensor(exemplar_vectors).to(self._device)]
+            elif init:
+                # self._text_memory_list = torch.cat((self._text_memory_list, torch.Tensor(exemplar_vectors).unsqueeze(0).to(self._device)), dim=0)
+                # self._text_memory_list = torch.cat((self._text_memory_list, torch.Tensor(exemplar_vectors).to(self._device)), dim=0)
+                self._text_memory_list.append(torch.Tensor(exemplar_vectors).to(self._device))
+            else:
+                assert False, "let's don't assume we modify text memory online"
+                # self._text_memory_list[class_idx, :, :] = torch.Tensor(exemplar_vectors).unsqueeze(0).to(self._device)
+        # self._text_class_means = self._text_memory_list.mean(dim=1)
+        self._text_class_means = torch.stack([x.mean(dim=0) for x in self._text_memory_list], dim=0)
+        self._text_class_means = self._text_class_means.detach()
+
+        if self.normalize:
+            self._text_class_means = F.normalize(self._text_class_means, p=2, dim=-1)
+        #self._memory_list = F.normalize(self._memory_list, p=2, dim=-1)
+
+        self._text_class_means.requires_grad = False
+
     def _compute_accuracy(self, model, loader):
         model.eval()
         correct, total = 0, 0
@@ -378,14 +526,14 @@ class memknn(BaseLearner):
             total += len(targets)
 
         return np.around(tensor2numpy(correct) * 100 / total, decimals=2)
-    
+
     def _knn(self, out, training, old=False):
         with torch.no_grad():
             if old:
                 classwise_sim = torch.einsum('b d, n d -> b n', out, rearrange(self._memory_list[:self._known_classes, :, :], 'c n d -> (c n) d'))
             else:
                 classwise_sim = torch.einsum('b d, n d -> b n', out, rearrange(self._memory_list, 'c n d -> (c n) d'))
-            
+
             # B, N -> B, K
             if training:
                 topk_sim, indices = classwise_sim.topk(k=self.k + 1, dim=-1, largest=True, sorted=True)
@@ -401,7 +549,7 @@ class memknn(BaseLearner):
             tr_q = out.unsqueeze(1)
             # (B, 1, D), (B, C, D) -> B, (1 + C), D
             tr_knn_cat = torch.cat([tr_q, knnemb], dim=1)
-        
+
         return out.unsqueeze(1), tr_knn_cat
 
     def _knn_classwise(self, out, training, old=False):
@@ -413,7 +561,7 @@ class memknn(BaseLearner):
             else:
                 classwise_sim = torch.einsum('b d, c n d -> b c n', out, self._memory_list)
                 class_idx = torch.arange(self._total_classes).unsqueeze(0).unsqueeze(-1)
-            
+
             # B, N -> B, K
             if training:  # to ignore self-voting
                 # B, C, N -> B, C, K
@@ -432,7 +580,7 @@ class memknn(BaseLearner):
             tr_q = out.unsqueeze(1)
             # (B, 1, D), (B, C, D) -> B, (1 + C), D
             tr_knn_cat = torch.cat([tr_q, knnemb], dim=1)
-        
+
         return out.unsqueeze(1), tr_knn_cat
 
     def _knn_18(self, out, training, old=False):
@@ -457,8 +605,30 @@ class memknn(BaseLearner):
             knnemb = torch.cat([repeat(self._class_means, 'c d -> b c 1 d', b=bs), knnemb], dim=2)
             # knnemb = rearrange(knnemb, 'b c k d -> (b c) k d')
             knnemb = rearrange(knnemb, 'b c k d -> b (c k) d')
-        
+
         return knnemb
+
+    def _knn_p19_1(self, out, training, old=False):
+        def retrieve_knn(x, mem, k):
+            with torch.no_grad():
+                classwise_sim = torch.einsum('b d, n d -> b n', x, mem)
+                _, indices = classwise_sim.topk(k=k, dim=-1, largest=True, sorted=True)
+
+                # N, D [[B, K] -> B, K, D
+                knnemb = mem[indices]
+                return knnemb
+
+        if old:
+            mem_txt = torch.cat(self._text_memory_list[:self._known_classes], dim=0)
+            mem_img = torch.cat(self._memory_list[:self._known_classes], dim=0)
+        else:
+            mem_txt = torch.cat(self._text_memory_list, dim=0)
+            mem_img = torch.cat(self._memory_list, dim=0)
+
+        kv_txt = retrieve_knn(x=out, mem=mem_txt, k=self.k)
+        kv_img = retrieve_knn(x=out, mem=mem_img, k=self.k)
+        return kv_txt, kv_img
+        # return kv_img, kv_img  # 84.0
 
     def _knn_nakata(self, out, training):
         with torch.no_grad():
@@ -473,7 +643,7 @@ class memknn(BaseLearner):
             preds, _ = torch.mode(indices)
 
         return preds
-        
+
     def _eval_cnn(self, loader):
         self._network.eval()
         y_pred, y_true = [], []

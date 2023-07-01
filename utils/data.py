@@ -1,10 +1,15 @@
+import os
+import torch
 import numpy as np
 from torchvision import datasets, transforms
+from torch.utils.data import Dataset
 from utils.toolkit import split_images_labels
 from torchvision.transforms import InterpolationMode
 from PIL import Image
+from utils.text.preprocess import SentPreProcessor
 
 BICUBIC = Image.BICUBIC
+dataroot = '/home/dahyun/datasets'
 
 def convert_image_to_rgb(image):
     return image.convert("RGB")
@@ -34,8 +39,8 @@ class iCIFAR10(iData):
     class_order = np.arange(10).tolist()
 
     def download_data(self):
-        train_dataset = datasets.cifar.CIFAR10("./data", train=True, download=True)
-        test_dataset = datasets.cifar.CIFAR10("./data", train=False, download=True)
+        train_dataset = datasets.cifar.CIFAR10(dataroot, train=True, download=True)
+        test_dataset = datasets.cifar.CIFAR10(dataroot, train=False, download=True)
         self.train_data, self.train_targets = train_dataset.data, np.array(
             train_dataset.targets
         )
@@ -75,8 +80,8 @@ class iCIFAR100(iData):
     class_order = np.arange(100).tolist()
 
     def download_data(self):
-        train_dataset = datasets.cifar.CIFAR100("./data", train=True, download=True)
-        test_dataset = datasets.cifar.CIFAR100("./data", train=False, download=True)
+        train_dataset = datasets.cifar.CIFAR100(dataroot, train=True, download=True)
+        test_dataset = datasets.cifar.CIFAR100(dataroot, train=False, download=True)
         self.train_data, self.train_targets = train_dataset.data, np.array(
             train_dataset.targets
         )
@@ -140,11 +145,49 @@ class iImageNet100(iData):
     class_order = np.arange(1000).tolist()
 
     def download_data(self):
-        train_dir = "./data/imagenet100/train/"
-        test_dir = "./data/imagenet100/val/"
+        train_dir = os.path.join(dataroot, "imagenet100/train/")
+        test_dir = os.path.join(dataroot, "imagenet100/val/")
 
         train_dset = datasets.ImageFolder(train_dir)
         test_dset = datasets.ImageFolder(test_dir)
 
         self.train_data, self.train_targets = split_images_labels(train_dset.imgs)
         self.test_data, self.test_targets = split_images_labels(test_dset.imgs)
+
+        # build text class data
+        # build classname-classid key: {'n01234567': 0, ... }
+        self.loaded_idxs = {}
+        for x, y in zip(self.test_data, self.test_targets):
+            classname = x.split('/')[-2]  # n01234567
+            if self.loaded_idxs.get(classname) == None:
+                self.loaded_idxs[classname] = y
+
+        # sentence token generator
+        label_mapping_file = os.path.join("imagenet100", 'labels.txt')
+        wiki_dir = os.path.join("imagenet100", 'wiki')
+        self.text_tokens = self._make_sentence_tokens(label_mapping_file, wiki_dir)
+        self.num_sents = [token.shape[0] for token in self.text_tokens]
+        self.text = TextToken_Dataset(self.text_tokens, self.num_sents)
+        # self.text_data, self.text_targets = self.text.data, self.text.targets
+
+    def _make_sentence_tokens(self, label_mapping_file, wiki_dir):
+        preprocessor = SentPreProcessor(dataroot, self.loaded_idxs, label_mapping_file, wiki_dir, context_length=75)
+        return preprocessor.make_sentence_tokens()
+
+
+class TextToken_Dataset(Dataset):
+    def __init__(self, text_tokens: list, num_sents: list):
+        self.data = torch.cat(text_tokens)
+        self.targets = []
+
+        targets = [[idx]*nsents for idx, nsents in enumerate(num_sents)]
+        for t in targets: self.targets += t
+
+    def __len__(self):
+        return len(self.targets)
+
+    def __getitem__(self, index):
+        sample = self.data[index]
+        label = self.targets[index]
+
+        return sample, label

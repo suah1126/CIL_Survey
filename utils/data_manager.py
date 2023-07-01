@@ -76,9 +76,38 @@ class DataManager(object):
         data, targets = np.concatenate(data), np.concatenate(targets)
 
         if ret_data:
-            return data, targets, DummyDataset(data, targets, trsf, self.use_path)
+            return data, targets, DummyDataset(data, targets, trsf, self.use_path, 'img')
         else:
-            return DummyDataset(data, targets, trsf, self.use_path)
+            return DummyDataset(data, targets, trsf, self.use_path, 'img')
+
+    def get_text_dataset(
+        self, indices, source, mode, appendent=None, ret_data=False, m_rate=None
+    ):
+        x, y = self._text_data, self._text_targets
+        data, targets = [], []
+        for idx in indices:
+            if m_rate is None:
+                class_data, class_targets = self._select(
+                    x, y, low_range=idx, high_range=idx + 1
+                )
+            else:
+                class_data, class_targets = self._select_rmm(
+                    x, y, low_range=idx, high_range=idx + 1, m_rate=m_rate
+                )
+            data.append(class_data)
+            targets.append(class_targets)
+
+        if appendent is not None and len(appendent) != 0:
+            appendent_data, appendent_targets = appendent
+            data.append(appendent_data)
+            targets.append(appendent_targets)
+
+        data, targets = np.concatenate(data), np.concatenate(targets)
+
+        if ret_data:
+            return data, targets, DummyDataset(data, targets, None, self.use_path, 'txt')
+        else:
+            return DummyDataset(data, targets, None, self.use_path, 'txt')
 
     def get_dataset_with_split(
         self, indices, source, mode, appendent=None, val_samples_per_class=0
@@ -143,6 +172,8 @@ class DataManager(object):
         # Data
         self._train_data, self._train_targets = idata.train_data, idata.train_targets
         self._test_data, self._test_targets = idata.test_data, idata.test_targets
+        # text
+        self._text_data, self._text_targets = idata.text.data, idata.text.targets
         self.use_path = idata.use_path
 
         # Transforms
@@ -167,6 +198,9 @@ class DataManager(object):
         )
         self._test_targets = _map_new_class_index(self._test_targets, self._class_order)
 
+        # text
+        self._text_targets = _map_new_class_index(self._text_targets, self._class_order)
+
     def _select(self, x, y, low_range, high_range):
         idxes = np.where(np.logical_and(y >= low_range, y < high_range))[0]
         return x[idxes], y[idxes]
@@ -190,24 +224,28 @@ class DataManager(object):
 
 
 class DummyDataset(Dataset):
-    def __init__(self, images, labels, trsf, use_path=False):
-        assert len(images) == len(labels), "Data size error!"
-        self.images = images
+    def __init__(self, items, labels, trsf, use_path=False, modality='img'):
+        assert len(items) == len(labels), "Data size error!"
+        self.items = items
         self.labels = labels
         self.trsf = trsf
         self.use_path = use_path
+        self.modality = modality
 
     def __len__(self):
-        return len(self.images)
+        return len(self.items)
 
     def __getitem__(self, idx):
-        if self.use_path:
-            image = self.trsf(pil_loader(self.images[idx]))
-        else:
-            image = self.trsf(Image.fromarray(self.images[idx]))
+        if self.modality == 'img':
+            if self.use_path:
+                item = self.trsf(pil_loader(self.items[idx]))
+            else:
+                item = self.trsf(Image.fromarray(self.items[idx]))
+        elif self.modality == 'txt':
+            item = self.items[idx]
         label = self.labels[idx]
 
-        return idx, image, label
+        return idx, item, label
 
 
 def _map_new_class_index(y, order):

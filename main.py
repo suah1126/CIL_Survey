@@ -42,7 +42,7 @@ def setup_parser():
     parser.add_argument('--model_name','-model', type=str, default=None, required=True)
     parser.add_argument('--convnet_type','-net', type=str, default='resnet32')
     parser.add_argument('--prefix','-p',type=str, help='exp type', default='benchmark', choices=['benchmark', 'fair', 'auc'])
-    parser.add_argument('--ver', type=str, help='memknn model type', default='m8', choices=['m8', 'm8_4', 'm18', 'nakata'])
+    parser.add_argument('--ver', type=str, help='memknn model type', default='m8', choices=['m8', 'm8_4', 'm18', 'nakata', 'p19_1'])
     parser.add_argument('--device','-d', nargs='+', type=int, default=[0,1,2,3])
     parser.add_argument('--debug', action="store_true")
     parser.add_argument('--skip', action="store_true")
