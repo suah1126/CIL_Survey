@@ -43,6 +43,9 @@ def setup_parser():
     parser.add_argument('--normalize', action="store_true")
     parser.add_argument('--eval', action="store_true")
     parser.add_argument('--logpath', type=str, default='test')
+    parser.add_argument('--base_scale', type=float, default=8.)
+    parser.add_argument('--knn_scale', type=float, default=32.)
+    parser.add_argument('--epoch', type=int, default=1)
 
     return parser
 

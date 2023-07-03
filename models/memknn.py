@@ -47,6 +47,7 @@ class memknn(BaseLearner):
         self.convnet_type = args['convnet_type']
         self.distillation = args['distillation']
         self.normalize = args['normalize']
+        self.epoch = args['epoch']
 
         if 'clip' in self.convnet_type:
             self.train_mode = 'clip'
@@ -170,10 +171,13 @@ class memknn(BaseLearner):
             self._training_step(train_loader, test_loader, optimizer, scheduler)
 
     def _training_step(self, train_loader, test_loader, optimizer, scheduler, init=False):
+        '''
         if init:
             prog_bar = tqdm(range(init_epoch))
         else:
             prog_bar = tqdm(range(epochs))
+        '''
+        prog_bar = tqdm(range(self.epoch))
         for _, epoch in enumerate(prog_bar):
             self._network.train()
             losses = 0.0

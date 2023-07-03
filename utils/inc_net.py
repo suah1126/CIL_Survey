@@ -875,8 +875,9 @@ class KNNNet(BaseNet):
         proto_txt_ = F.normalize(txt_proto.to(clipfeat.device), dim=-1, p=2)
         proto_img_ = F.normalize(img_proto.to(clipfeat.device), dim=-1, p=2)
 
-        base_scale = 8.
-        knn_scale = 32.
+        base_scale = self.args['base_scale']
+        knn_scale = self.args['knn_scale']
+        print(base_scale, knn_scale)
         sim_clip = torch.einsum('c d, b d -> b c', proto_txt_, clipfeat_) * base_scale
         sim_txt = torch.einsum('c d, b d -> b c', proto_img_, out_txt_) * knn_scale
         sim_img = torch.einsum('c d, b d -> b c', proto_txt_, out_img_) * knn_scale
