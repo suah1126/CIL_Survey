@@ -138,10 +138,12 @@ class memknn(BaseLearner):
 
         param_list = []
         for k, v in self._network.named_parameters():
-            if 'backbone' in k:
+            if 'convnet' in k:
                 if not self._network.pretrained:
+                    print(k)
                     param_list.append(v)
             else:
+                print(k)
                 param_list.append(v)
 
         if self._cur_task == 0:
@@ -245,8 +247,7 @@ class memknn(BaseLearner):
             logits = self._network(out, txtknn, imgknn, self._text_class_means, self._class_means, out.shape[0])
             logits = torch.log_softmax(logits, dim=-1)
         elif self.model == 'nakata':
-            preds = self._knn_nakata(out, training)
-            logits = F.one_hot(preds, num_classes=self._total_classes)
+            logits = self._knn_nakata(out, training)
         return logits
 
     def _distillation_step(self, inputs):
@@ -631,18 +632,33 @@ class memknn(BaseLearner):
         # return kv_img, kv_img  # 84.0
 
     def _knn_nakata(self, out, training):
-        with torch.no_grad():
-            num_samples = self._memory_list.shape[1]
-            all_features = self._memory_list.view([-1, self._memory_list.shape[2]])
 
-            similarity_mat = torch.einsum('b d, n d -> b n', F.normalize(out, dim=-1), F.normalize(all_features, dim=-1))
+        labels  = torch.tensor([[i] * len(mem) for i, mem in enumerate(self._memory_list)]).flatten().to(out.device)
+        memory = torch.cat(self._memory_list, dim=0).to(out.device)
+        num_cls = max(labels)+1
 
-            topk_sim, indices = similarity_mat.topk(k=self.k, dim=-1, largest=True, sorted=False)
+        # l2_norm
+        out_ = F.normalize(out, dim=-1, p=2)
+        memory_ = F.normalize(memory, dim=-1, p=2)
 
-            indices = torch.div(indices, num_samples, rounding_mode='trunc')
-            preds, _ = torch.mode(indices)
+        globalsim = torch.einsum('b d, n d -> b n', out_, memory_)
+        _, indices = globalsim.topk(k=self.k, dim=-1, largest=True, sorted=True)
+        globalcls = labels[indices]
 
-        return preds
+        def majority_vote(input):
+            count = [0]*num_cls
+            for item in input:
+                count[item.cpu().item()] += 1
+
+            onehot = torch.argmax(torch.tensor(count)).item() # just vote
+            result = torch.tensor([0.]*num_cls)
+            result[onehot] = 1.0
+
+            return result.to(input.device)
+
+        sim = torch.stack(list(map(majority_vote, globalcls)))
+
+        return sim
 
     def _eval_cnn(self, loader):
         self._network.eval()
