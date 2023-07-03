@@ -25,7 +25,7 @@ def train(args):
 def _train(args):
     time_str = datetime.datetime.now().strftime('%m%d-%H-%M-%S-%f')[:-3]
     args['time_str'] = time_str
-    
+
     init_cls = 0 if args ["init_cls"] == args["increment"] else args["init_cls"]
     exp_name = "{}_{}_{}_{}_B{}_Inc{}".format(
         args["time_str"],
@@ -38,14 +38,14 @@ def _train(args):
     args['exp_name'] = exp_name
 
     if args['debug']:
-        logfilename = "logs/debug/{}/{}/{}/{}".format( 
+        logfilename = "logs/debug/{}/{}/{}/{}".format(
             args["prefix"],
             args["dataset"],
             args["model_name"],
             args["exp_name"]
         )
     else:
-        logfilename = "logs/{}/{}/{}/{}".format( 
+        logfilename = "logs/{}/{}/{}/{}".format(
             args["prefix"],
             args["dataset"],
             args["model_name"],
@@ -54,7 +54,7 @@ def _train(args):
 
     args['logfilename'] = logfilename
 
-    csv_name = "{}_{}_{}_B{}_Inc{}".format( 
+    csv_name = "{}_{}_{}_B{}_Inc{}".format(
         args["dataset"],
         args["seed"],
         args["convnet_type"],
@@ -95,13 +95,14 @@ def _train(args):
     cnn_curve, nme_curve, no_nme = {"top1": [], "top5": []}, {"top1": [], "top5": []}, True
     start_time = time.time()
     logging.info(f"Start time:{start_time}")
-    
+
     for task in range(data_manager.nb_tasks):
+        print(task)
         logging.info("All params: {}".format(count_parameters(model._network)))
         logging.info(
             "Trainable params: {}".format(count_parameters(model._network, True))
         )
-        
+
         model.incremental_train(data_manager)
         if task == data_manager.nb_tasks-1:
             cnn_accy, nme_accy = model.eval_task(save_conf=True)
@@ -128,7 +129,7 @@ def _train(args):
             logging.info("CNN top5 curve: {}".format(cnn_curve["top5"]))
             logging.info("NME top1 curve: {}".format(nme_curve["top1"]))
             logging.info("NME top5 curve: {}\n".format(nme_curve["top5"]))
-            # wandb.log({"CNN top1 accuracy": cnn_curve["top1"]})
+            wandb.log({"acc_finalstep": cnn_accy["grouped"]["total"]})
             # wandb.log({"NME top1 accuracy": nme_curve["top1"]})
         else:
             logging.info("No NME accuracy.")
@@ -141,7 +142,8 @@ def _train(args):
             logging.info("CNN top1 curve: {}".format(cnn_curve["top1"]))
             logging.info("CNN top5 curve: {}\n".format(cnn_curve["top5"]))
             #wandb.log({"CNN top1 accuracy": cnn_curve["top1"]})
-    
+
+    wandb.log({"avg_acc_stepwise": sum(cnn_curve["top1"])/10.})
     end_time = time.time()
     logging.info(f"End Time:{end_time}")
     cost_time = end_time - start_time
@@ -189,7 +191,7 @@ def save_time(args, cost_time):
 def save_results(args, cnn_curve, nme_curve, no_nme=False):
     cnn_top1, cnn_top5 = cnn_curve["top1"], cnn_curve['top5']
     nme_top1, nme_top5 = nme_curve["top1"], nme_curve['top5']
-    
+
     #-------CNN TOP1----------
     _log_dir = os.path.join("./results/", f"{args['prefix']}", "cnn_top1")
     os.makedirs(_log_dir, exist_ok=True)
@@ -245,7 +247,7 @@ def save_results(args, cnn_curve, nme_curve, no_nme=False):
                 f.write(f"{args['time_str']},{args['model_name']},{args['memory_size']},")
                 for _acc in nme_top1[:-1]:
                     f.write(f"{_acc},")
-                f.write(f"{nme_top1[-1]} \n")       
+                f.write(f"{nme_top1[-1]} \n")
 
         #-------NME TOP5----------
         _log_dir = os.path.join("./results/", f"{args['prefix']}", "nme_top5")
@@ -263,4 +265,4 @@ def save_results(args, cnn_curve, nme_curve, no_nme=False):
                 f.write(f"{args['time_str']},{args['model_name']},{args['memory_size']},")
                 for _acc in nme_top5[:-1]:
                     f.write(f"{_acc},")
-                f.write(f"{nme_top5[-1]} \n") 
+                f.write(f"{nme_top5[-1]} \n")
