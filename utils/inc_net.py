@@ -391,7 +391,7 @@ class DERNet(nn.Module):
         self.convnet_type = convnet_type
         self.convnets = nn.ModuleList()
         self.pretrained = pretrained
-        self.out_dim = None
+        self.out_dim = 512
         self.fc = None
         self.aux_fc = None
         self.task_sizes = []
@@ -403,12 +403,19 @@ class DERNet(nn.Module):
         return self.out_dim * len(self.convnets)
 
     def extract_vector(self, x):
-        features = [convnet(x)["features"] for convnet in self.convnets]
+        if 'clip' in self.convnet_type:
+            features = [convnet(x).float() for convnet in self.convnets]
+        else:
+            features = [convnet(x)["features"] for convnet in self.convnets]
+
         features = torch.cat(features, 1)
         return features
 
     def forward(self, x):
-        features = [convnet(x)["features"] for convnet in self.convnets]
+        if 'clip' in self.convnet_type:
+            features = [convnet(x).float() for convnet in self.convnets]
+        else:
+            features = [convnet(x)["features"] for convnet in self.convnets]
         features = torch.cat(features, 1)
 
         out = self.fc(features)  # {logics: self.fc(features)}
@@ -518,7 +525,7 @@ class FOSTERNet(nn.Module):
         self.convnet_type = convnet_type
         self.convnets = nn.ModuleList()
         self.pretrained = pretrained
-        self.out_dim = None
+        self.out_dim = 512
         self.fc = None
         self.fe_fc = None
         self.task_sizes = []
@@ -531,12 +538,18 @@ class FOSTERNet(nn.Module):
         return self.out_dim * len(self.convnets)
 
     def extract_vector(self, x):
-        features = [convnet(x)["features"] for convnet in self.convnets]
+        if 'clip' in self.convnet_type:
+            features = [convnet(x).float() for convnet in self.convnets]
+        else:
+            features = [convnet(x)["features"] for convnet in self.convnets]
         features = torch.cat(features, 1)
         return features
 
     def forward(self, x):
-        features = [convnet(x)["features"] for convnet in self.convnets]
+        if 'clip' in self.convnet_type:
+            features = [convnet(x).float() for convnet in self.convnets]
+        else:
+            features = [convnet(x)["features"] for convnet in self.convnets]
         features = torch.cat(features, 1)
         out = self.fc(features)
         fe_logits = self.fe_fc(features[:, -self.out_dim :])["logits"]
