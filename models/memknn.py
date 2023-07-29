@@ -17,14 +17,14 @@ from scipy.spatial.distance import cdist
 
 EPSILON = 1e-8
 
-init_epoch = 1
-init_lr = 0.0001
+init_epoch = 50
+init_lr = 5e-4
 init_milestones = [60, 120]
 init_lr_decay = 0.5
 init_weight_decay = 0.0005
 
-epochs = 1
-lrate = 0.0001
+epochs = 50
+lrate = 5e-4
 milestones = [60, 120]
 lrate_decay = 0.5
 batch_size = 128
@@ -186,9 +186,8 @@ class memknn(BaseLearner):
                 inputs, targets = inputs.to(self._device), targets.to(self._device)
 
                 logits = self._step(inputs, True)
-                loss = F.nll_loss(logits, targets)
+                loss = F.cross_entropy(logits, targets)
 
-                '''
                 # distillation loss
                 if self.distillation and not init:
                     logits_kd = self._distillation_step(inputs)
@@ -197,7 +196,6 @@ class memknn(BaseLearner):
                                     logits_kd,
                                     T,)
                     loss = loss + loss_kd
-                '''
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -249,7 +247,6 @@ class memknn(BaseLearner):
         elif self.model == 'p19_1':
             txtknn, imgknn = self._knn_p19_1(out, training)
             logits = self._network(out, txtknn, imgknn, self._text_class_means, self._class_means, out.shape[0])
-            logits = torch.log_softmax(logits, dim=-1)
         elif self.model == 'nakata':
             logits = self._knn_nakata(out, training)
         return logits
@@ -693,6 +690,6 @@ class memknn(BaseLearner):
         return np.argsort(scores, axis=1)[:, : self.topk], y_true  # [N, topk]
 
 def _KD_loss(pred, soft, T):
-    # pred = torch.log_softmax(pred / T, dim=1)
-    # soft = torch.softmax(soft / T, dim=1)
+    pred = torch.log_softmax(pred / T, dim=1)
+    soft = torch.softmax(soft / T, dim=1)
     return -1 * torch.mul(soft, pred).sum() / pred.shape[0]
